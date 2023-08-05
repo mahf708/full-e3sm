@@ -1,0 +1,27 @@
+From 46088e8722c51dd9326e418ef5961513a181fa66 Mon Sep 17 00:00:00 2001
+From: mahf708 <naser.mahfouz@pnnl.gov>
+Date: Sat, 5 Aug 2023 10:13:15 -0500
+Subject: [PATCH] update scorpio/scorpio_classic
+
+---
+ externals/scorpio         | 2 +-
+ externals/scorpio_classic | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/externals/scorpio b/externals/scorpio
+index 7a1a1b3d63..e9618b005f 160000
+--- a/externals/scorpio
++++ b/externals/scorpio
+@@ -1 +1 @@
+-Subproject commit 7a1a1b3d63338a3d0e8518aa2bf01d8f59d15be9
++Subproject commit e9618b005f91c8d469eae4749ea162da11aa07a9
+diff --git a/externals/scorpio_classic b/externals/scorpio_classic
+index 6538b12bb6..09dab011e4 160000
+--- a/externals/scorpio_classic
++++ b/externals/scorpio_classic
+@@ -1 +1 @@
+-Subproject commit 6538b12bb6cd4204d5c720f9dd4cb4c16d13b378
++Subproject commit 09dab011e403763696b72e0a2f1bc4a6b3a94b00
+-- 
+2.27.0
+
