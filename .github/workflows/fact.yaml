@@ -22,8 +22,9 @@ jobs:
             cd e3sm
             for this_patch in $(ls ../plus/${SHA7}/${PATCH}/*.patch); do
               echo "Applying patch ${this_patch}"
-              git apply ${this_patch} -v
+              git apply --index ${this_patch} -v
             done
+            git submodule update --init --recursive
       - name: Tar all folders
         run: |
           # change the name of the folder if there is a patch

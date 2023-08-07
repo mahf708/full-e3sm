@@ -32,8 +32,9 @@ jobs:
                 cd e3sm
                 for subdir in $(ls ../plus/${SHA7}/); do
                     for this_patch in ../plus/${SHA7}/${subdir}/*.patch; do
-                        git apply ${this_patch} -v
+                        git apply --index ${this_patch} -v
                     done
+                    git submodule update --init --recursive 
                     cd ..
                     touch ${SHA7}-${subdir}-full.tar.gz
                     tar --exclude=${SHA7}-${subdir}-full.tar.gz -zcvf ${SHA7}-${subdir}-full.tar.gz .
