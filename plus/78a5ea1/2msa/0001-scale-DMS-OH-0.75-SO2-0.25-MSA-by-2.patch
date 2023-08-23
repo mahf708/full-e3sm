@@ -1,0 +1,25 @@
+From d4430b857d26de821545a387b7e12e74f8e77e1b Mon Sep 17 00:00:00 2001
+From: mahf708 <naser.mahfouz@pnnl.gov>
+Date: Wed, 23 Aug 2023 13:54:34 -0500
+Subject: [PATCH] scale DMS + OH --> 0.75 SO2 + 0.25 MSA by 2
+
+---
+ components/eam/src/chemistry/mozart/mo_usrrxt.F90 | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/components/eam/src/chemistry/mozart/mo_usrrxt.F90 b/components/eam/src/chemistry/mozart/mo_usrrxt.F90
+index 6b9375008d..e607b7ce79 100644
+--- a/components/eam/src/chemistry/mozart/mo_usrrxt.F90
++++ b/components/eam/src/chemistry/mozart/mo_usrrxt.F90
+@@ -813,7 +813,7 @@ contains
+        !-----------------------------------------------------------------------
+        if ( usr_oh_dms_ndx > 0 ) then
+           o2(:ncol) = invariants(:ncol,k,inv_o2_ndx)
+-          rxt(:,k,usr_oh_dms_ndx) = 2.000e-10_r8 * exp(5820.0_r8 * tinv(:)) / &
++          rxt(:,k,usr_oh_dms_ndx) = 2._r8 * 2.000e-10_r8 * exp(5820.0_r8 * tinv(:)) / &
+                ((2.000e29_r8 / o2(:)) + exp(6280.0_r8 * tinv(:)))
+        endif
+        if ( aq_so2_h2o2_ndx > 0 .or. aq_so2_o3_ndx > 0 ) then
+-- 
+2.41.0
+

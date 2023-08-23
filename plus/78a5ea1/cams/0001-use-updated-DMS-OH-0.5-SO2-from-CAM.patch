@@ -1,0 +1,35 @@
+From d1018f384cb12b85650b7b5ab95d145236ecd283 Mon Sep 17 00:00:00 2001
+From: mahf708 <naser.mahfouz@pnnl.gov>
+Date: Wed, 23 Aug 2023 13:50:37 -0500
+Subject: [PATCH] use updated DMS + OH --> 0.5 * SO2 from CAM
+
+---
+ components/eam/src/chemistry/mozart/mo_usrrxt.F90 | 10 ++++++----
+ 1 file changed, 6 insertions(+), 4 deletions(-)
+
+diff --git a/components/eam/src/chemistry/mozart/mo_usrrxt.F90 b/components/eam/src/chemistry/mozart/mo_usrrxt.F90
+index 6b9375008d..574e32d822 100644
+--- a/components/eam/src/chemistry/mozart/mo_usrrxt.F90
++++ b/components/eam/src/chemistry/mozart/mo_usrrxt.F90
+@@ -679,12 +679,14 @@ contains
+ 
+ !-----------------------------------------------------------------
+ !       ... DMS + OH  --> .5 * SO2
++!       JPL15-10 (use [O2] = 0.21*[M])
++!       k = 8.2E-39 * exp(5376/T) * [O2] / (1 + 1.05E-5 *([O2]/[M]) * exp(3644/T))
+ !-----------------------------------------------------------------
+        if( usr_DMS_OH_ndx > 0 ) then
+-          call comp_exp( exp_fac, 7460._r8*tinv, ncol )
+-          ko(:) = 1._r8 + 5.5e-31_r8 * exp_fac * m(:,k) * 0.21_r8
+-          call comp_exp( exp_fac, 7810._r8*tinv, ncol )
+-          rxt(:,k,usr_DMS_OH_ndx) = 1.7e-42_r8 * exp_fac * m(:,k) * 0.21_r8 / ko(:)
++          call comp_exp( exp_fac, 3644._r8*tinv, ncol )
++          ko(:) = 1._r8 + 1.05e-5_r8 * exp_fac * 0.21_r8
++          call comp_exp( exp_fac, 5376._r8*tinv, ncol )
++          rxt(:,k,usr_DMS_OH_ndx) = 8.2e-39_r8 * exp_fac * m(:,k) * 0.21_r8 / ko(:)
+        end if
+ 
+ !-----------------------------------------------------------------
+-- 
+2.41.0
+

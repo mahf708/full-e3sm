@@ -1,0 +1,25 @@
+From a14d135b393ea88080330260b7fd1edad368447b Mon Sep 17 00:00:00 2001
+From: mahf708 <naser.mahfouz@pnnl.gov>
+Date: Wed, 23 Aug 2023 13:53:02 -0500
+Subject: [PATCH] scale DMS + OH --> 0.5 * SO2 by 2
+
+---
+ components/eam/src/chemistry/mozart/mo_usrrxt.F90 | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/components/eam/src/chemistry/mozart/mo_usrrxt.F90 b/components/eam/src/chemistry/mozart/mo_usrrxt.F90
+index 6b9375008d..4075af6994 100644
+--- a/components/eam/src/chemistry/mozart/mo_usrrxt.F90
++++ b/components/eam/src/chemistry/mozart/mo_usrrxt.F90
+@@ -684,7 +684,7 @@ contains
+           call comp_exp( exp_fac, 7460._r8*tinv, ncol )
+           ko(:) = 1._r8 + 5.5e-31_r8 * exp_fac * m(:,k) * 0.21_r8
+           call comp_exp( exp_fac, 7810._r8*tinv, ncol )
+-          rxt(:,k,usr_DMS_OH_ndx) = 1.7e-42_r8 * exp_fac * m(:,k) * 0.21_r8 / ko(:)
++          rxt(:,k,usr_DMS_OH_ndx) = 2._r8 * 1.7e-42_r8 * exp_fac * m(:,k) * 0.21_r8 / ko(:)
+        end if
+ 
+ !-----------------------------------------------------------------
+-- 
+2.41.0
+
