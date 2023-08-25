@@ -1,0 +1,67 @@
+From 95723ee5f4cf80aae3d93f13f04059d07667e0ea Mon Sep 17 00:00:00 2001
+From: mahf708 <naser.mahfouz@pnnl.gov>
+Date: Thu, 24 Aug 2023 17:53:29 -0700
+Subject: [PATCH 2/2] DMS + OH -> SO2 edits
+
+---
+ components/eam/chem_proc/inputs/pp_chemUCI_linozv3_mam5_vbs.in  | 2 +-
+ .../chemistry/pp_superfast_mam5_resus_mom_soag/chem_mech.doc    | 2 +-
+ .../src/chemistry/pp_superfast_mam5_resus_mom_soag/chem_mech.in | 2 +-
+ .../chemistry/pp_superfast_mam5_resus_mom_soag/mo_setrxt.F90    | 2 +-
+ 4 files changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/components/eam/chem_proc/inputs/pp_chemUCI_linozv3_mam5_vbs.in b/components/eam/chem_proc/inputs/pp_chemUCI_linozv3_mam5_vbs.in
+index 2b4315c..898fe87 100644
+--- a/components/eam/chem_proc/inputs/pp_chemUCI_linozv3_mam5_vbs.in
++++ b/components/eam/chem_proc/inputs/pp_chemUCI_linozv3_mam5_vbs.in
+@@ -260,7 +260,7 @@ CHEMISTRY
+ [usr_e90]  E90 ->                                 ; 1.286E-7, 0.
+ 
+ * MAM4 chemistry below
+-[ldms_oh]     DMS + OH -> SO2                    ; 9.600E-12, -234
++[ldms_oh]     DMS + OH -> SO2                    ; 1.100E-11, -280
+ [usr_DMS_OH]  DMS + OH ->  .5 * SO2 + .5 * HO2
+ [usr_SO2_OH]  SO2 + OH -> H2SO4
+ [ldms_no3]    DMS + NO3 -> SO2 + HNO3            ; 1.9e-13,  520.
+diff --git a/components/eam/src/chemistry/pp_superfast_mam5_resus_mom_soag/chem_mech.doc b/components/eam/src/chemistry/pp_superfast_mam5_resus_mom_soag/chem_mech.doc
+index 3f76edf..755b9f6 100644
+--- a/components/eam/src/chemistry/pp_superfast_mam5_resus_mom_soag/chem_mech.doc
++++ b/components/eam/src/chemistry/pp_superfast_mam5_resus_mom_soag/chem_mech.doc
+@@ -290,7 +290,7 @@ Class List
+   lmvko2_no        ( 63)   MVKO2 + NO ->  0.5*CH3CO3 + CH2O + NO2                               rate = 2.70E-12*exp(    360./t)   ( 85)
+   lmvko2_ho2       ( 64)   MVKO2 + HO2 ->  C2H5OOH + CO                                         rate = 1.82E-13*exp(   1300./t)   ( 86)
+   usr_e90          ( 65)   E90 -> (No products)                                                 rate = 1.29E-07                   ( 87)
+-  ldms_oh          ( 66)   DMS + OH ->  SO2                                                     rate = 9.60E-12*exp(   -234./t)   ( 88)
++  ldms_oh          ( 66)   DMS + OH ->  SO2                                                     rate = 1.10E-11*exp(   -280./t)   ( 88)
+   usr_DMS_OH       ( 67)   DMS + OH ->  .5*SO2 + .5*HO2                                         rate = ** User defined **         ( 89)
+   usr_SO2_OH       ( 68)   SO2 + OH ->  H2SO4                                                   rate = ** User defined **         ( 90)
+   ldms_no3         ( 69)   DMS + NO3 ->  SO2 + HNO3                                             rate = 1.90E-13*exp(    520./t)   ( 91)
+diff --git a/components/eam/src/chemistry/pp_superfast_mam5_resus_mom_soag/chem_mech.in b/components/eam/src/chemistry/pp_superfast_mam5_resus_mom_soag/chem_mech.in
+index 2b4315c..898fe87 100644
+--- a/components/eam/src/chemistry/pp_superfast_mam5_resus_mom_soag/chem_mech.in
++++ b/components/eam/src/chemistry/pp_superfast_mam5_resus_mom_soag/chem_mech.in
+@@ -260,7 +260,7 @@ CHEMISTRY
+ [usr_e90]  E90 ->                                 ; 1.286E-7, 0.
+ 
+ * MAM4 chemistry below
+-[ldms_oh]     DMS + OH -> SO2                    ; 9.600E-12, -234
++[ldms_oh]     DMS + OH -> SO2                    ; 1.100E-11, -280
+ [usr_DMS_OH]  DMS + OH ->  .5 * SO2 + .5 * HO2
+ [usr_SO2_OH]  SO2 + OH -> H2SO4
+ [ldms_no3]    DMS + NO3 -> SO2 + HNO3            ; 1.9e-13,  520.
+diff --git a/components/eam/src/chemistry/pp_superfast_mam5_resus_mom_soag/mo_setrxt.F90 b/components/eam/src/chemistry/pp_superfast_mam5_resus_mom_soag/mo_setrxt.F90
+index fdacbe6..a213137 100644
+--- a/components/eam/src/chemistry/pp_superfast_mam5_resus_mom_soag/mo_setrxt.F90
++++ b/components/eam/src/chemistry/pp_superfast_mam5_resus_mom_soag/mo_setrxt.F90
+@@ -117,7 +117,7 @@
+       rate(:,:,86) = 1.820E-13_r8 * exp_fac(:,:)
+       rate(:,:,83) = 8.500E-16_r8 * exp( -1520._r8 * itemp(:,:) )
+       rate(:,:,84) = 2.600E-12_r8 * exp( 610._r8 * itemp(:,:) )
+-      rate(:,:,88) = 9.600E-12_r8 * exp( -234._r8 * itemp(:,:) )
++      rate(:,:,88) = 1.100E-11_r8 * exp( -280._r8 * itemp(:,:) )
+       rate(:,:,91) = 1.9e-13_r8 * exp( 520._r8 * itemp(:,:) )
+       rate(:,:,95) = 2.54e-11_r8 * exp( 410._r8 * itemp(:,:) )
+       rate(:,:,96) = 1.2e-11_r8 * exp( 444._r8 * itemp(:,:) )
+-- 
+2.41.0
+
