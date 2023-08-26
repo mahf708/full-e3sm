@@ -1,7 +1,7 @@
 From 46088e8722c51dd9326e418ef5961513a181fa66 Mon Sep 17 00:00:00 2001
 From: mahf708 <naser.mahfouz@pnnl.gov>
 Date: Sat, 5 Aug 2023 10:13:15 -0500
-Subject: [PATCH] update scorpio/scorpio_classic
+Subject: [PATCH 2/2] update scorpio/scorpio_classic
 
 ---
  externals/scorpio         | 2 +-
