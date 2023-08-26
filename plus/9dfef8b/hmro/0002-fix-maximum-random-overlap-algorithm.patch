@@ -11,7 +11,7 @@ diff --git a/components/eam/src/physics/cam/output_aerocom_aie.F90 b/components/
 index 79b136ff7b..2852c17f7f 100644
 --- a/components/eam/src/physics/cam/output_aerocom_aie.F90
 +++ b/components/eam/src/physics/cam/output_aerocom_aie.F90
-@@ -408,8 +408,15 @@ CONTAINS
+@@ -408,8 +408,14 @@ CONTAINS
            flag_max = 1._r8
  !          ftmp(i) = clt(i) * ( 1._r8 - min( max( cld(i,k), cld(i,k-1) ), max_cld) ) /                &
  !            ( 1.0_r8 - min( cld(i,k-1), max_cld ) )  ! maximum-random overlap
@@ -19,9 +19,8 @@ index 79b136ff7b..2852c17f7f 100644
 -            ( 1.0_r8 - min( cld(i,k-1), max_cld ) )  ! maximum-random overlap
 +
 +           if ( cld(i,k-1).ge.thres_cld ) then
-+             fr= ( 1._r8 - min( max( cld(i,k), clt(i) ), max_cld) ) /                &
-+               ( 1.0_r8 - min( clt(i), max_cld ) )  ! maximum-random (maximum, in-layer)
-+             fr = min(1.0_r8, fr)
++             fr= ( 1._r8 - min( max( cld(i,k), 1.0_r8 - clt(i) ), max_cld) ) /                &
++               ( 1.0_r8 - min( 1.0_r8 - clt(i), max_cld ) )  ! maximum-random (maximum, in-layer)
 +           else
 +             fr = ( 1._r8 - cld(i,k) )              ! maximum-random (random, out-layer)
 +           endif
