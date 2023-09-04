@@ -1,0 +1,27 @@
+From 830fcd0155ef0df886e0464ea0bac0807fa665f9 Mon Sep 17 00:00:00 2001
+From: mahf708 <naser.mahfouz@pnnl.gov>
+Date: Sun, 3 Sep 2023 20:56:13 -0500
+Subject: [PATCH] scale cloud sedimentation in p3
+
+---
+ components/eam/src/physics/p3/eam/micro_p3.F90 | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/components/eam/src/physics/p3/eam/micro_p3.F90 b/components/eam/src/physics/p3/eam/micro_p3.F90
+index bc5c5be..d09ea4c 100644
+--- a/components/eam/src/physics/p3/eam/micro_p3.F90
++++ b/components/eam/src/physics/p3/eam/micro_p3.F90
+@@ -3960,8 +3960,8 @@ subroutine cloud_sedimentation(kts,kte,ktop,kbot,kdir,   &
+                   nc(k) = nc_incld(k)*cld_frac_l(k)
+ 
+                   dum = 1._rtype / bfb_pow(lamc(k), bcn)
+-                  V_qc(k) = acn(k)*bfb_gamma(4._rtype+bcn+mu_c(k))*dum/(bfb_gamma(mu_c(k)+4._rtype))
+-                  V_nc(k) = acn(k)*bfb_gamma(1._rtype+bcn+mu_c(k))*dum/(bfb_gamma(mu_c(k)+1._rtype))
++                  V_qc(k) = 2._rtype*acn(k)*bfb_gamma(4._rtype+bcn+mu_c(k))*dum/(bfb_gamma(mu_c(k)+4._rtype))
++                  V_nc(k) = 2._rtype*acn(k)*bfb_gamma(1._rtype+bcn+mu_c(k))*dum/(bfb_gamma(mu_c(k)+1._rtype))
+ 
+                endif qc_notsmall_c2
+                Co_max = max(Co_max, V_qc(k)*dt_left*inv_dz(k))
+-- 
+2.31.1
+
