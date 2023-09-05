@@ -12,6 +12,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: recursive
+          progress: false
       - name: Produce shortened sha
         run: echo "SHA7=$(echo $(cd e3sm; git log --oneline  | head -n1 | cut -c1-7))" >> $GITHUB_ENV
       - name: Patch the code
