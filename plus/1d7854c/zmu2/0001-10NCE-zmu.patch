@@ -15,7 +15,7 @@ index a4555a2..6420b84 100755
  real(r8) ::  cons14,cons16,cons17,cons18,cons19,cons24,cons25, cons31, cons32, cons41
  
  real(r8) :: droplet_mass_25um
-+real(r8) :: droplet_mass_50um
++real(r8) :: droplet_mass_40um
  
  ! contact freezing due to dust
  ! dust number mean radius (m), Zender et al JGR 2003 assuming number mode radius of 0.6 micron, sigma=2

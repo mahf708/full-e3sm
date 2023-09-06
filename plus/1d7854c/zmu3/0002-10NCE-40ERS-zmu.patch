@@ -1,0 +1,25 @@
+From de358b0e6ea62a8c9ecb952fb4d1882932cf2d3d Mon Sep 17 00:00:00 2001
+From: mahf708 <naser.mahfouz@pnnl.gov>
+Date: Mon, 4 Sep 2023 12:36:55 -0500
+Subject: [PATCH 2/2] 10NCE 40ERS zmu
+
+---
+ components/eam/src/physics/cam/zm_microphysics.F90 | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/components/eam/src/physics/cam/zm_microphysics.F90 b/components/eam/src/physics/cam/zm_microphysics.F90
+index 6420b84..44b5279 100755
+--- a/components/eam/src/physics/cam/zm_microphysics.F90
++++ b/components/eam/src/physics/cam/zm_microphysics.F90
+@@ -1494,7 +1494,7 @@ subroutine zm_mphy(su,    qu,   mu,   du,   eu,    cmel,  cmei,  zf,   pm,   te,
+                  prc(k) = auto_fac*30500._r8*qcic(i,k)**3.19_r8*    &
+                     (ncic(i,k)/1.e6_r8*rho(i,k))**(-1.0_r8)
+                  nprc1(k) = prc(k)/(qcic(i,k)/ncic(i,k))
+-                 nprc(k) = prc(k) * (1._r8/droplet_mass_25um)
++                 nprc(k) = prc(k) * (1._r8/droplet_mass_30um)
+ 
+               else
+                  prc(k)=0._r8
+-- 
+2.27.0
+
