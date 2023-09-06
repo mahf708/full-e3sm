@@ -7,9 +7,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           submodules: recursive
+          progress: false
       - name: Produce shortened sha
         run: echo "SHA7=$(echo $(cd e3sm; git log --oneline  | head -n1 | cut -c1-7))" >> $GITHUB_ENV
       - name: Tar all folders
@@ -21,9 +22,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           submodules: recursive
+          progress: false
       - name: Produce shortened sha
         run: echo "SHA7=$(echo $(cd e3sm; git log --oneline  | head -n1 | cut -c1-7))" >> $GITHUB_ENV
       - name: Tar the code
