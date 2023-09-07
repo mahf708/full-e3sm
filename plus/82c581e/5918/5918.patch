@@ -1,0 +1,176 @@
+From e2245ddea64a5efaf9cfe70467435aea2e2c82ec Mon Sep 17 00:00:00 2001
+From: Naser Mahfouz <naser.mahfouz@pnnl.gov>
+Date: Thu, 7 Sep 2023 10:11:45 -0700
+Subject: [PATCH 1/2] add dms emis scale factor
+
+---
+ components/eam/src/chemistry/mozart/mo_srf_emissions.F90 | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/components/eam/src/chemistry/mozart/mo_srf_emissions.F90 b/components/eam/src/chemistry/mozart/mo_srf_emissions.F90
+index 6e2d1c933c12..2496cf3b60da 100644
+--- a/components/eam/src/chemistry/mozart/mo_srf_emissions.F90
++++ b/components/eam/src/chemistry/mozart/mo_srf_emissions.F90
+@@ -37,7 +37,7 @@ module mo_srf_emissions
+   logical :: has_emis(gas_pcnst)
+   type(emission), allocatable :: emissions(:)
+   integer                     :: n_emis_species 
+-  integer :: c10h16_ndx, isop_ndx
++  integer :: c10h16_ndx, isop_ndx, dms_ndx
+ 
+ contains
+ 
+@@ -201,6 +201,7 @@ subroutine srf_emissions_inti( srf_emis_specifier, emis_type, emis_cycle_yr, emi
+ 
+     c10h16_ndx = get_spc_ndx('C10H16')
+     isop_ndx = get_spc_ndx('ISOP')
++    dms_ndx = get_spc_ndx('DMS')
+ 
+   end subroutine srf_emissions_inti
+ 
+@@ -275,6 +276,7 @@ subroutine set_srf_emissions( lchnk, ncol, sflx )
+ 
+     real(r8) :: flux(ncol)
+     real(r8) :: mfactor
++    real(r8) :: dms_emis_scale
+     integer  :: isec
+ 
+     character(len=12),parameter :: mks_units(4) = (/ "kg/m2/s     ", &
+@@ -286,6 +288,7 @@ subroutine set_srf_emissions( lchnk, ncol, sflx )
+     real(r8), dimension(ncol) :: rlats, rlons 
+ 
+     sflx(:,:) = 0._r8
++    dms_emis_scale = 1._r8
+ 
+     !--------------------------------------------------------
+     !	... set non-zero emissions
+@@ -299,6 +302,10 @@ subroutine set_srf_emissions( lchnk, ncol, sflx )
+           flux(:ncol) = flux(:ncol) + emissions(m)%fields(isec)%data(:ncol,1,lchnk)
+        enddo
+ 
++       if ( n == dms_ndx ) then
++          flux(:ncol) = dms_emis_scale * flux(:ncol)
++       endif
++
+        units = to_lower(trim(emissions(m)%fields(1)%units(:GLC(emissions(m)%fields(1)%units))))
+        
+        if ( any( mks_units(:) == units ) ) then
+
+From 0b02e0138d9a4ec443de4dbff39b7ca07559044e Mon Sep 17 00:00:00 2001
+From: mahf708 <naser.mahfouz@pnnl.gov>
+Date: Thu, 7 Sep 2023 14:10:03 -0500
+Subject: [PATCH 2/2]  add dms_emis_scale to namelist
+
+---
+ .../eam/bld/namelist_files/namelist_defaults_eam.xml      | 1 +
+ components/eam/bld/namelist_files/namelist_definition.xml | 6 ++++++
+ components/eam/src/chemistry/mozart/chemistry.F90         | 8 ++++++--
+ components/eam/src/chemistry/mozart/mo_srf_emissions.F90  | 5 ++---
+ 4 files changed, 15 insertions(+), 5 deletions(-)
+
+diff --git a/components/eam/bld/namelist_files/namelist_defaults_eam.xml b/components/eam/bld/namelist_files/namelist_defaults_eam.xml
+index 013b5bec30d2..e2dfa5cc4cdd 100755
+--- a/components/eam/bld/namelist_files/namelist_defaults_eam.xml
++++ b/components/eam/bld/namelist_files/namelist_defaults_eam.xml
+@@ -1892,6 +1892,7 @@ with se_tstep, dt_remap_factor, dt_tracer_factor set to -1
+ <seasalt_emis_scale phys="default" chem="linoz_mam4_resus_mom_soag"> 0.6D0      </seasalt_emis_scale>
+ <seasalt_emis_scale phys="default" chem="superfast_mam4_resus_mom_soag"> 0.6D0  </seasalt_emis_scale>
+ <seasalt_emis_scale phys="default" chem="superfast_mam5_resus_mom_soag"> 0.55D0 </seasalt_emis_scale>
++<dms_emis_scale phys="default"> 1.0D0 </dms_emis_scale>
+ <zmconv_trigdcape_ull phys="default"> .true.     </zmconv_trigdcape_ull>
+ <zmconv_c0_lnd phys="default" clubb_sgs="1" microphys="p3"> 0.0020D0   </zmconv_c0_lnd>
+ <zmconv_c0_ocn phys="default" clubb_sgs="1" microphys="p3"> 0.0020D0   </zmconv_c0_ocn>
+diff --git a/components/eam/bld/namelist_files/namelist_definition.xml b/components/eam/bld/namelist_files/namelist_definition.xml
+index 11eec7936d37..95ef495e18e0 100644
+--- a/components/eam/bld/namelist_files/namelist_definition.xml
++++ b/components/eam/bld/namelist_files/namelist_definition.xml
+@@ -4941,6 +4941,12 @@ Seasalt aerosol emission tuning factor
+ Default: set by build-namelist.
+ </entry>
+ 
++<entry id="dms_emis_scale" type="real" category="cam_chem"
++       group="chem_inparm" valid_values="" >
++DMS emission tuning factor
++Default: set by build-namelist.
++</entry>
++
+ <entry id="airpl_emis_file" type="char*256" input_pathname="abs" category="cam_chem"
+        group="chem_inparm" valid_values="" >
+ Full pathname of boundary dataset for airplane emissions.
+diff --git a/components/eam/src/chemistry/mozart/chemistry.F90 b/components/eam/src/chemistry/mozart/chemistry.F90
+index 2033de980bed..57412d8f8189 100644
+--- a/components/eam/src/chemistry/mozart/chemistry.F90
++++ b/components/eam/src/chemistry/mozart/chemistry.F90
+@@ -106,6 +106,8 @@ module chemistry
+   integer            :: ext_frc_fixed_ymd = 0
+   integer            :: ext_frc_fixed_tod = 0
+ 
++  real(r8)           :: dms_emis_scale = 1._r8
++
+   ! fixed stratosphere
+   
+   character(len=shr_kind_cl) :: fstrat_file = 'fstrat_file'
+@@ -512,7 +514,8 @@ subroutine chem_readnl(nlfile)
+          depvel_lnd_file, clim_soilw_file, season_wes_file, drydep_srf_file, &
+          srf_emis_type, srf_emis_cycle_yr, srf_emis_fixed_ymd, srf_emis_fixed_tod, srf_emis_specifier,  &
+          fstrat_file, fstrat_list, fstrat_efold_list, &
+-         ext_frc_specifier, ext_frc_type, ext_frc_cycle_yr, ext_frc_fixed_ymd, ext_frc_fixed_tod
++         ext_frc_specifier, ext_frc_type, ext_frc_cycle_yr, ext_frc_fixed_ymd, ext_frc_fixed_tod, &
++         dms_emis_scale
+ 
+     namelist /chem_inparm/ chem_rad_passive
+ 
+@@ -687,6 +690,7 @@ subroutine chem_readnl(nlfile)
+     call mpibcast (ext_frc_fixed_ymd, 1,                               mpiint,  0, mpicom)
+     call mpibcast (ext_frc_fixed_tod, 1,                               mpiint,  0, mpicom)
+ 
++    call mpibcast (dms_emis_scale,    1,                               mpir8,   0, mpicom)
+ 
+     ! fixed stratosphere
+ 
+@@ -1145,7 +1149,7 @@ subroutine chem_emissions( state, cam_in )
+     !-----------------------------------------------------------------------      
+     !        ... Set surface emissions
+     !-----------------------------------------------------------------------      
+-    call set_srf_emissions( lchnk, ncol, sflx(:,:) )
++    call set_srf_emissions( lchnk, ncol, dms_emis_scale, sflx(:,:) )
+ 
+     do m = 1,pcnst
+        n = map2chm(m)
+diff --git a/components/eam/src/chemistry/mozart/mo_srf_emissions.F90 b/components/eam/src/chemistry/mozart/mo_srf_emissions.F90
+index 2496cf3b60da..2f78a9f03de8 100644
+--- a/components/eam/src/chemistry/mozart/mo_srf_emissions.F90
++++ b/components/eam/src/chemistry/mozart/mo_srf_emissions.F90
+@@ -232,7 +232,7 @@ subroutine set_srf_emissions_time( pbuf2d, state )
+   end subroutine set_srf_emissions_time
+ 
+   ! adds surf flux specified in file to sflx
+-  subroutine set_srf_emissions( lchnk, ncol, sflx )
++  subroutine set_srf_emissions( lchnk, ncol, dms_emis_scale, sflx )
+     !--------------------------------------------------------
+     !	... form the surface fluxes for this latitude slice
+     !--------------------------------------------------------
+@@ -249,6 +249,7 @@ subroutine set_srf_emissions( lchnk, ncol, sflx )
+     !--------------------------------------------------------
+     integer,  intent(in)  :: ncol                  ! columns in chunk
+     integer,  intent(in)  :: lchnk                 ! chunk index
++    real(r8), intent(in)  :: dms_emis_scale        ! scaling dms emissions
+     real(r8), intent(out) :: sflx(:,:) ! surface emissions ( kg/m^2/s )
+ 
+     !--------------------------------------------------------
+@@ -276,7 +277,6 @@ subroutine set_srf_emissions( lchnk, ncol, sflx )
+ 
+     real(r8) :: flux(ncol)
+     real(r8) :: mfactor
+-    real(r8) :: dms_emis_scale
+     integer  :: isec
+ 
+     character(len=12),parameter :: mks_units(4) = (/ "kg/m2/s     ", &
+@@ -288,7 +288,6 @@ subroutine set_srf_emissions( lchnk, ncol, sflx )
+     real(r8), dimension(ncol) :: rlats, rlons 
+ 
+     sflx(:,:) = 0._r8
+-    dms_emis_scale = 1._r8
+ 
+     !--------------------------------------------------------
+     !	... set non-zero emissions
