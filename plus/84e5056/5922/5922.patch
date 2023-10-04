@@ -1,0 +1,30 @@
+From f21d9b4d0c64d9e44f863c17f31c735c35ca6e91 Mon Sep 17 00:00:00 2001
+From: Robert Jacob <jacob@anl.gov>
+Date: Fri, 8 Sep 2023 16:37:00 -0500
+Subject: [PATCH] Change bilinear map for low-res case to use TempestRemap
+
+The bilinear map used for the ne30np4.pg2 and EC30to60E2r2 grid combination is
+changed to one generated using TempestRemap.  This will allow coupling with offline
+maps to better match coupling with online maps which use the same algorithm from
+TempestRemap to calculate the weights.
+
+[non-BFB] for cases using ne30np4.pg2 and EC30to60E2r2
+---
+ cime_config/config_grids.xml | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/cime_config/config_grids.xml b/cime_config/config_grids.xml
+index 32d55c310af0..4c6785298f93 100755
+--- a/cime_config/config_grids.xml
++++ b/cime_config/config_grids.xml
+@@ -3149,8 +3149,8 @@
+ 
+     <gridmap atm_grid="ne30np4.pg2" ocn_grid="EC30to60E2r2">
+       <map name="ATM2OCN_FMAPNAME">cpl/gridmaps/ne30pg2/map_ne30pg2_to_EC30to60E2r2_mono.201005.nc</map>
+-      <map name="ATM2OCN_VMAPNAME">cpl/gridmaps/ne30pg2/map_ne30pg2_to_EC30to60E2r2_bilin.201005.nc</map>
+-      <map name="ATM2OCN_SMAPNAME">cpl/gridmaps/ne30pg2/map_ne30pg2_to_EC30to60E2r2_bilin.201005.nc</map>
++      <map name="ATM2OCN_VMAPNAME">cpl/gridmaps/ne30pg2/map_ne30pg2_to_EC30to60E2r2_bilin.tr.230522.nc</map>
++      <map name="ATM2OCN_SMAPNAME">cpl/gridmaps/ne30pg2/map_ne30pg2_to_EC30to60E2r2_bilin.tr.230522.nc</map>
+       <map name="OCN2ATM_FMAPNAME">cpl/gridmaps/EC30to60E2r2/map_EC30to60E2r2_to_ne30pg2_mono.201005.nc</map>
+       <map name="OCN2ATM_SMAPNAME">cpl/gridmaps/EC30to60E2r2/map_EC30to60E2r2_to_ne30pg2_mono.201005.nc</map>
+     </gridmap>
