@@ -1,0 +1,2615 @@
+From 974c1df8fbfb2628bda0b29d1558c080a40721a9 Mon Sep 17 00:00:00 2001
+From: Sean Patrick Santos <SeanPatrickSantos@gmail.com>
+Date: Sun, 30 Jul 2023 23:14:28 -0700
+Subject: [PATCH 1/5] Make ATM_SUPPLIES_GUSTINESS=TRUE the default/only option
+ for EAM.
+
+The ATM_SUPPLIES_GUSTINESS XML variable governs whether the
+atmosphere model exports a "gustiness" wind speed to the other
+components. It is now always set to TRUE for EAM runs, except for
+SCREAM runs. (SCREAM has not implemented its own gustiness
+parameterization yet.)
+
+The ATM_SUPPLIES_GUSTINESS=TRUE setting is required for EAM, rather
+than simply the default, because the old behavior where
+ATM_SUPPLIES_GUSTINESS=FALSE was considered buggy. Specifically, it
+caused surface components to return a "scalar" averaged stress rather
+than a vector stress to the atmosphere, potentially resulting in
+unphysical discontinuities in the returned stress vector. See #5834,
+which documented this scalar/vector mixup.
+
+This bug did not affect SCREAM or any compset where EAM is disabled
+(e.g. with data atmosphere), and those configurations should be
+unaffected (bit-for-bit).
+
+[CC] for EAM cases. This change is expected to cause an increase in
+average near-surface wind speeds, and hence also an increase in
+surface fluxes.
+[NML]
+---
+ components/eam/bld/build-namelist             |  3 ---
+ .../namelist_files/namelist_defaults_eam.xml  |  3 ---
+ .../namelist_files/namelist_definition.xml    | 13 -------------
+ components/eam/cime_config/buildnml           |  6 +++++-
+ .../eam/implicit_stress/shell_commands        |  1 -
+ components/eam/src/control/camsrfexch.F90     | 19 ++++---------------
+ components/eam/src/cpl/atm_import_export.F90  |  9 +++++----
+ .../eam/src/physics/cam/phys_control.F90      |  8 ++------
+ .../cime_config/config_component_e3sm.xml     |  4 ++++
+ 9 files changed, 20 insertions(+), 46 deletions(-)
+
+diff --git a/components/eam/bld/build-namelist b/components/eam/bld/build-namelist
+index 90772b100042..4090968c54d8 100755
+--- a/components/eam/bld/build-namelist
++++ b/components/eam/bld/build-namelist
+@@ -3935,9 +3935,6 @@ if ( $linearize_pbl_winds =~ /$TRUE/io ) {
+     }
+ }
+ 
+-# Export gustiness to surface components.
+-add_default($nl, 'export_gustiness');
+-
+ # Use Convective water in radiation
+ add_default($nl, 'conv_water_in_rad');
+ 
+diff --git a/components/eam/bld/namelist_files/namelist_defaults_eam.xml b/components/eam/bld/namelist_files/namelist_defaults_eam.xml
+index 4a1bcb2ed2a5..9a604fa14159 100755
+--- a/components/eam/bld/namelist_files/namelist_defaults_eam.xml
++++ b/components/eam/bld/namelist_files/namelist_defaults_eam.xml
+@@ -1139,9 +1139,6 @@
+ <!-- Linearization of boundary layer winds -->
+ <linearize_pbl_winds>.false.</linearize_pbl_winds>
+ 
+-<!-- Export gustiness value -->
+-<export_gustiness>.false.</export_gustiness>
+-
+ <!-- MMF CRM mean state acceleration -->
+ <use_crm_accel    use_MMF="0">.false.</use_crm_accel>
+ <crm_accel_uv     use_MMF="0">.false.</crm_accel_uv>
+diff --git a/components/eam/bld/namelist_files/namelist_definition.xml b/components/eam/bld/namelist_files/namelist_definition.xml
+index 8e84ddd7d827..8aafebcdac6e 100644
+--- a/components/eam/bld/namelist_files/namelist_definition.xml
++++ b/components/eam/bld/namelist_files/namelist_definition.xml
+@@ -4066,19 +4066,6 @@ If .true., a linearization of the response of the pbl scheme to surface stresses
+ is sent to the coupler every time step, using the fields 'wsresp' and 'tau_est'.
+ </entry>
+ 
+-<entry id="export_gustiness" type="logical" category="pbl"
+-       group="phys_ctl_nl" valid_values="" >
+-If .true., a gustiness value will be exported to the coupler, which allows
+-surface components to distinguish between the effect of mean wind and gustiness
+-when calculating fluxes (and in particular surface drag).
+-
+-If .false., no extra value is exported, and gustiness is instead applied by the
+-atmosphere by scaling up the exported wind fields (ubot and vbot). This is
+-simpler and requires slightly less coupling overhead, but produces numerical
+-artifacts (oscillations) in surface stresses, particularly when the gustiness is
+-large compared with the mean wind.
+-</entry>
+-
+ 
+ <!-- Flags for implementing code modifications under polar project -->
+ 
+diff --git a/components/eam/cime_config/buildnml b/components/eam/cime_config/buildnml
+index 6e206d516a10..83f4338facb4 100755
+--- a/components/eam/cime_config/buildnml
++++ b/components/eam/cime_config/buildnml
+@@ -61,6 +61,11 @@ def buildnml(case, caseroot, compname):
+ 
+     if not os.path.isdir(eamconf_dir): os.mkdir(eamconf_dir)
+ 
++    # Coupler and surface components now required to accept gustiness when EAM
++    # is used as the atmosphere model, unless SCREAM physics is used.
++    if not (atm_gustiness or "-DSCREAM" in cam_config_opts):
++        sys.exit("\n *** STOP: EAM requires ATM_SUPPLIES_GUSTINESS=TRUE. ***\n")
++
+     #--------------------------------------------------------------------
+     # Invoke eam configure - output will go in $CASEBUILD/eamconf
+     #--------------------------------------------------------------------
+@@ -191,7 +196,6 @@ def buildnml(case, caseroot, compname):
+         if cam_branch_file: infile_text += " cam_branch_file = {} \n".format(cam_branch_file)
+         if debug:           infile_text += " state_debug_checks = .true. \n"
+         if linearize_pbl_winds: infile_text += " linearize_pbl_winds = .true. \n"
+-        if atm_gustiness: infile_text += " export_gustiness = .true. \n"
+ 
+         create_namelist_infile(case,
+                                "{}/user_nl_eam{}".format(caseroot, inst_string),
+diff --git a/components/eam/cime_config/testdefs/testmods_dirs/eam/implicit_stress/shell_commands b/components/eam/cime_config/testdefs/testmods_dirs/eam/implicit_stress/shell_commands
+index 6e27a1dda940..adefeb8fbbe6 100644
+--- a/components/eam/cime_config/testdefs/testmods_dirs/eam/implicit_stress/shell_commands
++++ b/components/eam/cime_config/testdefs/testmods_dirs/eam/implicit_stress/shell_commands
+@@ -1,2 +1 @@
+-./xmlchange ATM_SUPPLIES_GUSTINESS="TRUE"
+ ./xmlchange ATM_FLUX_INTEGRATION_METHOD="implicit_stress"
+diff --git a/components/eam/src/control/camsrfexch.F90 b/components/eam/src/control/camsrfexch.F90
+index 20e1dd44c9da..feb42d3a5403 100644
+--- a/components/eam/src/control/camsrfexch.F90
++++ b/components/eam/src/control/camsrfexch.F90
+@@ -713,7 +713,6 @@ subroutine cam_export(state,cam_out,pbuf)
+    integer :: vmag_gust_idx, wsresp_idx, tau_est_idx
+    real(r8) :: umb(pcols), vmb(pcols),vmag(pcols)
+    logical :: linearize_pbl_winds ! Send wsresp and tau_est to coupler.
+-   logical :: export_gustiness ! Send vmag_gust to coupler
+ 
+    real(r8), pointer :: prec_dp(:)                 ! total precipitation   from ZM convection
+    real(r8), pointer :: snow_dp(:)                 ! snow from ZM   convection
+@@ -732,8 +731,7 @@ subroutine cam_export(state,cam_out,pbuf)
+    lchnk = state%lchnk
+    ncol  = state%ncol
+ 
+-   call phys_getopts(linearize_pbl_winds_out=linearize_pbl_winds, &
+-                     export_gustiness_out=export_gustiness)
++   call phys_getopts(linearize_pbl_winds_out=linearize_pbl_winds)
+ 
+    prec_dp_idx = pbuf_get_index('PREC_DP')
+    snow_dp_idx = pbuf_get_index('SNOW_DP')
+@@ -765,18 +763,9 @@ subroutine cam_export(state,cam_out,pbuf)
+ !PMA adds gustiness to surface scheme c20181128
+ 
+    do i=1,ncol
+-      if (export_gustiness) then
+-         cam_out%ubot(i)  = state%u(i,pver)
+-         cam_out%vbot(i)  = state%v(i,pver)
+-         cam_out%ugust(i) = vmag_gust(i)
+-      else
+-         ! If not exporting gustiness as a separate field, we apply it here.
+-         umb(i)           = state%u(i,pver)
+-         vmb(i)           = state%v(i,pver)
+-         vmag(i)          = max(1.e-5_r8,sqrt( umb(i)**2._r8 + vmb(i)**2._r8))
+-         cam_out%ubot(i)  = state%u(i,pver) * ((vmag_gust(i)+vmag(i))/vmag(i))
+-         cam_out%vbot(i)  = state%v(i,pver) * ((vmag_gust(i)+vmag(i))/vmag(i))
+-      end if
++      cam_out%ubot(i)  = state%u(i,pver)
++      cam_out%vbot(i)  = state%v(i,pver)
++      cam_out%ugust(i) = vmag_gust(i)
+       cam_out%tbot(i)  = state%t(i,pver)
+       cam_out%thbot(i) = state%t(i,pver) * state%exner(i,pver)
+       cam_out%zbot(i)  = state%zm(i,pver)
+diff --git a/components/eam/src/cpl/atm_import_export.F90 b/components/eam/src/cpl/atm_import_export.F90
+index 78140c257717..3391c2320d8b 100644
+--- a/components/eam/src/cpl/atm_import_export.F90
++++ b/components/eam/src/cpl/atm_import_export.F90
+@@ -254,11 +254,10 @@ subroutine atm_export( cam_out, a2x )
+     integer :: avsize, avnat
+     integer :: i,m,c,n,ig       ! indices
+     integer :: ncols            ! Number of columns
+-    logical :: linearize_pbl_winds, export_gustiness
++    logical :: linearize_pbl_winds
+     !-----------------------------------------------------------------------
+ 
+-    call phys_getopts(linearize_pbl_winds_out=linearize_pbl_winds, &
+-                      export_gustiness_out=export_gustiness)
++    call phys_getopts(linearize_pbl_winds_out=linearize_pbl_winds)
+ 
+     ! Copy from component arrays into chunk array data structure
+     ! Rearrange data from chunk structure into lat-lon buffer and subsequently
+@@ -276,7 +275,9 @@ subroutine atm_export( cam_out, a2x )
+              a2x(index_a2x_Sa_wsresp ,ig) = cam_out(c)%wsresp(i)
+              a2x(index_a2x_Sa_tau_est,ig) = cam_out(c)%tau_est(i)
+           end if
+-          if (export_gustiness) then
++          ! This check is only for SCREAMv0; otherwise gustiness should always
++          ! be exported.
++          if (index_a2x_Sa_ugust /= 0) then
+              a2x(index_a2x_Sa_ugust  ,ig) = cam_out(c)%ugust(i)
+           end if
+           a2x(index_a2x_Sa_tbot   ,ig) = cam_out(c)%tbot(i)   
+diff --git a/components/eam/src/physics/cam/phys_control.F90 b/components/eam/src/physics/cam/phys_control.F90
+index c933305f8208..747c6a023cbe 100644
+--- a/components/eam/src/physics/cam/phys_control.F90
++++ b/components/eam/src/physics/cam/phys_control.F90
+@@ -146,7 +146,6 @@ module phys_control
+ logical           :: state_debug_checks   = .false.    ! Extra checks for validity of physics_state objects
+                                                        ! in physics_update.
+ logical           :: linearize_pbl_winds  = .false.
+-logical           :: export_gustiness  = .false.
+ logical, public, protected :: use_mass_borrower    = .false.     ! switch on tracer borrower, instead of using the QNEG3 clipping
+ logical, public, protected :: use_qqflx_fixer      = .false.     ! switch on water vapor fixer to compensate changes in qflx
+ logical, public, protected :: print_fixer_message  = .false.     ! switch on error message printout in log file
+@@ -235,7 +234,7 @@ subroutine phys_ctl_readnl(nlfile)
+       is_output_interactive_volc, &
+       history_eddy, history_budget,  history_budget_histfile_num, history_waccm, &
+       conv_water_in_rad, history_clubb, do_clubb_sgs, do_shoc_sgs, do_tms, state_debug_checks, &
+-      linearize_pbl_winds, export_gustiness, &
++      linearize_pbl_winds, &
+       use_mass_borrower, do_aerocom_ind3, &
+       ieflx_opt, &
+       history_gaschmbudget, history_gaschmbudget_2D, history_gaschmbudget_2D_levels, &
+@@ -363,7 +362,6 @@ subroutine phys_ctl_readnl(nlfile)
+    call mpibcast(micro_do_icesupersat,            1 , mpilog,  0, mpicom)
+    call mpibcast(state_debug_checks,              1 , mpilog,  0, mpicom)
+    call mpibcast(linearize_pbl_winds,             1 , mpilog,  0, mpicom)
+-   call mpibcast(export_gustiness,                1 , mpilog,  0, mpicom)
+    call mpibcast(use_hetfrz_classnuc,             1 , mpilog,  0, mpicom)
+    call mpibcast(use_gw_oro,                      1 , mpilog,  0, mpicom)
+    call mpibcast(use_gw_front,                    1 , mpilog,  0, mpicom)
+@@ -600,7 +598,7 @@ subroutine phys_getopts(deep_scheme_out, shallow_scheme_out, eddy_scheme_out, &
+                         MMF_orientation_angle_out, use_MMF_VT_out, MMF_VT_wn_max_out, use_MMF_ESMT_out, &
+                         use_crm_accel_out, crm_accel_factor_out, crm_accel_uv_out, &
+                         do_clubb_sgs_out, do_shoc_sgs_out, do_tms_out, state_debug_checks_out, &
+-                        linearize_pbl_winds_out, export_gustiness_out, &
++                        linearize_pbl_winds_out, &
+                         do_aerocom_ind3_out,  &
+                         use_mass_borrower_out, & 
+                         use_qqflx_fixer_out, & 
+@@ -692,7 +690,6 @@ subroutine phys_getopts(deep_scheme_out, shallow_scheme_out, eddy_scheme_out, &
+    logical,           intent(out), optional :: print_fixer_message_out
+    logical,           intent(out), optional :: state_debug_checks_out
+    logical,           intent(out), optional :: linearize_pbl_winds_out
+-   logical,           intent(out), optional :: export_gustiness_out
+    logical,           intent(out), optional :: fix_g1_err_ndrop_out!BSINGH - bugfix for ndrop.F90
+    logical,           intent(out), optional :: ssalt_tuning_out    
+    logical,           intent(out), optional :: resus_fix_out       
+@@ -799,7 +796,6 @@ subroutine phys_getopts(deep_scheme_out, shallow_scheme_out, eddy_scheme_out, &
+    if ( present(print_fixer_message_out ) ) print_fixer_message_out  = print_fixer_message
+    if ( present(state_debug_checks_out  ) ) state_debug_checks_out   = state_debug_checks
+    if ( present(linearize_pbl_winds_out ) ) linearize_pbl_winds_out  = linearize_pbl_winds
+-   if ( present(export_gustiness_out    ) ) export_gustiness_out     = export_gustiness
+    if ( present(fix_g1_err_ndrop_out    ) ) fix_g1_err_ndrop_out     = fix_g1_err_ndrop
+    if ( present(ssalt_tuning_out        ) ) ssalt_tuning_out         = ssalt_tuning   
+    if ( present(resus_fix_out           ) ) resus_fix_out            = resus_fix      
+diff --git a/driver-mct/cime_config/config_component_e3sm.xml b/driver-mct/cime_config/config_component_e3sm.xml
+index e5562f68421a..dd7a5ddb6c15 100755
+--- a/driver-mct/cime_config/config_component_e3sm.xml
++++ b/driver-mct/cime_config/config_component_e3sm.xml
+@@ -204,6 +204,10 @@
+     <type>logical</type>
+     <valid_values>TRUE,FALSE</valid_values>
+     <default_value>FALSE</default_value>
++    <values match="last">
++      <value compset="_EAM">TRUE</value>
++      <value compset="SCREAM">FALSE</value>
++    </values>
+     <group>run_flags</group>
+     <file>env_run.xml</file>
+     <desc>
+
+From 3d3368d6ae63ebab2e389e90c1baad1951d78bc7 Mon Sep 17 00:00:00 2001
+From: Sean Patrick Santos <SeanPatrickSantos@gmail.com>
+Date: Mon, 31 Jul 2023 15:27:30 -0700
+Subject: [PATCH 2/5] Fix incorrect wind "addition" in gustiness calculations.
+
+As described in Ma et. al. (2022), the correct equation for combining
+two sources of gustiness with the resolved wind speed is
+
+U^2 = U0^2 + a UZM^2 + b UCLUBB^2
+
+where U is the desired gustiness-enhanced wind, and
+
+ * U0 is resolved wind.
+ * UZM is deep convective gustiness.
+ * UCLUBB is turbulent/boundary-layer gustiness.
+ * a and b are tuning parameters.
+
+The prior implementation did not follow this formula (see #5835),
+by failing to properly account for the squaring of each wind speed
+in the formula (or in the case of UCLUBB, accounting for it
+incorrectly). This commit fixes that bug.
+
+Note that the parameters "a" and "b" also no longer multiply the
+diagnostic outputs 'VMAGDP' and 'VMAGCL'. This results in output that
+is more consistent with the literature, though less consistent with
+previous model versions. Multiplying by sqrt(a) and sqrt(b) can
+easily be done in post-production, however.
+
+This commit also allows atm_gustiness to be used with downscaling in
+ELM; previously, these features were not allowed to be combined, but
+that restriction appears to have been unnecessary.
+
+Ma et. al. (2002): https://doi.org/10.5194/gmd-15-2881-2022
+
+Reported-by: @mabrunke
+
+[CC] for all configurations with EAM, but should be bit-for-bit for
+all other configurations. Expected effect is a reduction in the
+effect of gustiness, resulting in larger resolved wind speeds but
+smaller surface fluxes where the resolved wind speed is still low.
+---
+ components/cice/src/source/ice_atmo.F90       |  6 +++---
+ components/eam/src/physics/cam/clubb_intr.F90 | 14 ++++++--------
+ .../src/biogeophys/BareGroundFluxesMod.F90    |  6 +++---
+ .../elm/src/biogeophys/CanopyFluxesMod.F90    |  6 +++---
+ .../elm/src/biogeophys/LakeFluxesMod.F90      |  6 +++---
+ .../elm/src/biogeophys/UrbanFluxesMod.F90     |  6 +++---
+ .../elm/src/cpl/lnd_downscale_atm_forcing.F90 | 19 +++++++++++++++++++
+ components/elm/src/cpl/lnd_import_export.F90  |  8 ++++----
+ share/util/shr_flux_mod.F90                   |  6 +++---
+ 9 files changed, 47 insertions(+), 30 deletions(-)
+
+diff --git a/components/cice/src/source/ice_atmo.F90 b/components/cice/src/source/ice_atmo.F90
+index f6a7a4322788..cb6f6ad16abe 100644
+--- a/components/cice/src/source/ice_atmo.F90
++++ b/components/cice/src/source/ice_atmo.F90
+@@ -231,7 +231,7 @@ subroutine atmo_boundary_layer (nx_block, ny_block, &
+             i = indxi(ij)
+             j = indxj(ij)
+             wind0(ij) = max(wind(i,j), 0.01_dbl_kind)
+-            vmag(ij) = max(umin, wind0(ij) + ugust(i,j))
++            vmag(ij) = max(umin, sqrt(wind0(ij)**2 + ugust(i,j)**2))
+ !---------- (3b) option by Andrew Roberts
+ !            wind0(ij)   = sqrt( (uatm(i,j)-uvel(i,j))**2 + (vatm(i,j)-vvel(i,j))**2)
+ !---------- (3b) option end
+@@ -247,7 +247,7 @@ subroutine atmo_boundary_layer (nx_block, ny_block, &
+             i = indxi(ij)
+             j = indxj(ij)
+             wind0(ij) = max(wind(i,j), 0.01_dbl_kind)
+-            vmag(ij) = max(umin, wind0(ij) + ugust(i,j))
++            vmag(ij) = max(umin, sqrt(wind0(ij)**2 + ugust(i,j)**2))
+ !---------- (3b) option by Andrew Roberts
+ !            wind0(ij)   = sqrt( (uatm(i,j)-uvel(i,j))**2 + (vatm(i,j)-vvel(i,j))**2)
+ !---------- (3b) option end
+@@ -339,7 +339,7 @@ subroutine atmo_boundary_layer (nx_block, ny_block, &
+             tau(ij) = rhoa(i,j) * ustar(ij) * rd(ij) * windit(ij)
+             call shr_flux_update_stress(wind0(ij), wsresp(i,j), tau_est(i,j), &
+                  tau(ij), taupr(ij), dtau(ij), dtaupr(ij), windit(ij))
+-            vmagit(ij) = max(umin, windit(ij) + ugust(i,j))
++            vmagit(ij) = max(umin, sqrt(windit(ij)**2 + ugust(i,j)**2))
+ #endif
+ 
+          enddo                  ! ij
+diff --git a/components/eam/src/physics/cam/clubb_intr.F90 b/components/eam/src/physics/cam/clubb_intr.F90
+index 2d7e0fd7461f..a93331fabdd0 100644
+--- a/components/eam/src/physics/cam/clubb_intr.F90
++++ b/components/eam/src/physics/cam/clubb_intr.F90
+@@ -1510,7 +1510,6 @@ subroutine clubb_tend_cam( &
+    real(r8) :: gprec
+    real(r8) :: prec_gust(pcols)
+    real(r8) :: vmag_gust_dp(pcols),vmag_gust_cl(pcols)
+-   real(r8) :: vmag(pcols)
+    real(r8) :: gust_fac(pcols)
+    real(r8) :: umb(pcols), vmb(pcols),up2b(pcols),vp2b(pcols)
+    real(r8),parameter :: gust_facl = 1.2_r8 !gust fac for land
+@@ -1527,7 +1526,7 @@ subroutine clubb_tend_cam( &
+ ! ZM gustiness equation below from Redelsperger et al. (2000)
+ ! numbers are coefficients of the empirical equation
+ 
+-   ugust(gprec,gfac) = gfac*log(1._R8+57801.6_R8*gprec-3.55332096e7_R8*(gprec**2.0_R8))
++   ugust(gprec) = log(1._R8+57801.6_R8*gprec-3.55332096e7_R8*(gprec**2.0_R8))
+ 
+ #endif
+    det_s(:)   = 0.0_r8
+@@ -2967,12 +2966,11 @@ subroutine clubb_tend_cam( &
+            else
+              gust_fac(i)   = gust_faco
+            endif
+-           vmag(i)         = max(1.e-5_r8,sqrt( umb(i)**2._r8 + vmb(i)**2._r8))
+-           vmag_gust_dp(i) = ugust(min(prec_gust(i),6.94444e-4_r8),gust_fac(i)) ! Limit for the ZM gustiness equation set in Redelsperger et al. (2000)
+-           vmag_gust_dp(i) = max(0._r8, vmag_gust_dp(i) )!/ vmag(i))
+-           vmag_gust_cl(i) = gust_facc*(sqrt(max(0._r8,up2b(i)+vp2b(i))+vmag(i)**2._r8)-vmag(i))
+-           vmag_gust_cl(i) = max(0._r8, vmag_gust_cl(i) )!/ vmag(i))
+-           vmag_gust(i)    = vmag_gust_cl(i) + vmag_gust_dp(i)
++           vmag_gust_dp(i) = ugust(min(prec_gust(i),6.94444e-4_r8)) ! Limit for the ZM gustiness equation set in Redelsperger et al. (2000)
++           vmag_gust_dp(i) = max(0._r8, vmag_gust_dp(i) )
++           vmag_gust_cl(i) = sqrt(max(0._r8,up2b(i)+vp2b(i)))
++           vmag_gust(i)    = sqrt(gust_facc * vmag_gust_cl(i)**2 &
++                + gust_fac(i) * vmag_gust_dp(i)**2)
+           do k=1,pver
+              if (state1%zi(i,k)>pblh(i).and.state1%zi(i,k+1)<=pblh(i)) then
+                 ktopi(i) = k
+diff --git a/components/elm/src/biogeophys/BareGroundFluxesMod.F90 b/components/elm/src/biogeophys/BareGroundFluxesMod.F90
+index 468efedc99cb..3802c8399443 100644
+--- a/components/elm/src/biogeophys/BareGroundFluxesMod.F90
++++ b/components/elm/src/biogeophys/BareGroundFluxesMod.F90
+@@ -227,11 +227,11 @@ subroutine BareGroundFluxes(bounds, num_nolakeurbanp, filter_nolakeurbanp, &
+          if (implicit_stress) then
+             wind_speed0(p) = max(0.01_r8, hypot(forc_u(t), forc_v(t)))
+             wind_speed_adj(p) = wind_speed0(p)
+-            ur(p) = max(1.0_r8, wind_speed_adj(p) + ugust(t))
++            ur(p) = max(1.0_r8, sqrt(wind_speed_adj(p)**2 + ugust(t)**2))
+ 
+             prev_tau(p) = tau_est(t)
+          else
+-            ur(p)    = max(1.0_r8,sqrt(forc_u(t)*forc_u(t)+forc_v(t)*forc_v(t)) + ugust(t))
++            ur(p)    = max(1.0_r8,sqrt(forc_u(t)*forc_u(t)+forc_v(t)*forc_v(t)+ugust(t)*ugust(t)))
+          end if
+          tau_diff(p) = 1.e100_r8
+ 
+@@ -286,7 +286,7 @@ subroutine BareGroundFluxes(bounds, num_nolakeurbanp, filter_nolakeurbanp, &
+                call shr_flux_update_stress(wind_speed0(p), wsresp(t), tau_est(t), &
+                     tau(p), prev_tau(p), tau_diff(p), prev_tau_diff(p), &
+                     wind_speed_adj(p))
+-               ur(p) = max(1.0_r8, wind_speed_adj(p) + ugust(t))
++               ur(p) = max(1.0_r8, sqrt(wind_speed_adj(p)**2 + ugust(t)**2))
+             end if
+ 
+             tstar = temp1(p)*dth(p)
+diff --git a/components/elm/src/biogeophys/CanopyFluxesMod.F90 b/components/elm/src/biogeophys/CanopyFluxesMod.F90
+index d2fa607ee03e..6fa95faa333f 100755
+--- a/components/elm/src/biogeophys/CanopyFluxesMod.F90
++++ b/components/elm/src/biogeophys/CanopyFluxesMod.F90
+@@ -707,11 +707,11 @@ subroutine CanopyFluxes(bounds,  num_nolakeurbanp, filter_nolakeurbanp, &
+          if (implicit_stress) then
+             wind_speed0(p) = max(0.01_r8, hypot(forc_u(t), forc_v(t)))
+             wind_speed_adj(p) = wind_speed0(p)
+-            ur(p) = max(1.0_r8, wind_speed_adj(p) + ugust(t))
++            ur(p) = max(1.0_r8, sqrt(wind_speed_adj(p)**2 + ugust(t)**2))
+ 
+             prev_tau(p) = tau_est(t)
+          else
+-            ur(p) = max(1.0_r8,sqrt(forc_u(t)*forc_u(t)+forc_v(t)*forc_v(t)) + ugust(t))
++            ur(p) = max(1.0_r8,sqrt(forc_u(t)*forc_u(t)+forc_v(t)*forc_v(t)+ugust(t)*ugust(t)))
+          end if
+          tau_diff(p) = 1.e100_r8
+ 
+@@ -790,7 +790,7 @@ subroutine CanopyFluxes(bounds,  num_nolakeurbanp, filter_nolakeurbanp, &
+                call shr_flux_update_stress(wind_speed0(p), wsresp(t), tau_est(t), &
+                     tau(p), prev_tau(p), tau_diff(p), prev_tau_diff(p), &
+                     wind_speed_adj(p))
+-               ur(p) = max(1.0_r8, wind_speed_adj(p) + ugust(t))
++               ur(p) = max(1.0_r8, sqrt(wind_speed_adj(p)**2 + ugust(t)**2))
+             end if
+ 
+             ! Bulk boundary layer resistance of leaves
+diff --git a/components/elm/src/biogeophys/LakeFluxesMod.F90 b/components/elm/src/biogeophys/LakeFluxesMod.F90
+index 220ec70d0124..1f0b1d6ee168 100644
+--- a/components/elm/src/biogeophys/LakeFluxesMod.F90
++++ b/components/elm/src/biogeophys/LakeFluxesMod.F90
+@@ -354,11 +354,11 @@ subroutine LakeFluxes(bounds, num_lakec, filter_lakec, num_lakep, filter_lakep,
+          if (implicit_stress) then
+             wind_speed0(p) = max(0.01_r8, hypot(forc_u(t), forc_v(t)))
+             wind_speed_adj(p) = wind_speed0(p)
+-            ur(p) = max(1.0_r8, wind_speed_adj(p) + ugust(t))
++            ur(p) = max(1.0_r8, sqrt(wind_speed_adj(p)**2 + ugust(t)**2))
+ 
+             prev_tau(p) = tau_est(t)
+          else
+-            ur(p) = max(1.0_r8,sqrt(forc_u(t)*forc_u(t)+forc_v(t)*forc_v(t)) + ugust(t))
++            ur(p) = max(1.0_r8,sqrt(forc_u(t)*forc_u(t)+forc_v(t)*forc_v(t)+ugust(t)*ugust(t)))
+          end if
+          tau_diff(p) = 1.e100_r8
+ 
+@@ -435,7 +435,7 @@ subroutine LakeFluxes(bounds, num_lakec, filter_lakec, num_lakep, filter_lakep,
+                call shr_flux_update_stress(wind_speed0(p), wsresp(t), tau_est(t), &
+                     tau(p), prev_tau(p), tau_diff(p), prev_tau_diff(p), &
+                     wind_speed_adj(p))
+-               ur(p) = max(1.0_r8, wind_speed_adj(p) + ugust(t))
++               ur(p) = max(1.0_r8, sqrt(wind_speed_adj(p)**2 + ugust(t)**2))
+             end if
+ 
+             ! Get derivative of fluxes with respect to ground temperature
+diff --git a/components/elm/src/biogeophys/UrbanFluxesMod.F90 b/components/elm/src/biogeophys/UrbanFluxesMod.F90
+index 8863663dc592..3c37d9dd291e 100644
+--- a/components/elm/src/biogeophys/UrbanFluxesMod.F90
++++ b/components/elm/src/biogeophys/UrbanFluxesMod.F90
+@@ -338,11 +338,11 @@ subroutine UrbanFluxes (bounds, num_nourbanl, filter_nourbanl,
+          if (implicit_stress) then
+             wind_speed0(l) = max(0.01_r8, hypot(forc_u(t), forc_v(t)))
+             wind_speed_adj(l) = wind_speed0(l)
+-            ur(l) = max(1.0_r8, wind_speed_adj(l) + ugust(t))
++            ur(l) = max(1.0_r8, sqrt(wind_speed_adj(l)**2 + ugust(t)**2))
+ 
+             prev_tau(l) = tau_est(t)
+          else
+-            ur(l) = max(1.0_r8,sqrt(forc_u(t)*forc_u(t)+forc_v(t)*forc_v(t)) + ugust(t))
++            ur(l) = max(1.0_r8,sqrt(forc_u(t)*forc_u(t)+forc_v(t)*forc_v(t)+ugust(t)*ugust(t)))
+          end if
+          tau_diff(l) = 1.e100_r8
+ 
+@@ -433,7 +433,7 @@ subroutine UrbanFluxes (bounds, num_nourbanl, filter_nourbanl,
+                call shr_flux_update_stress(wind_speed0(l), wsresp(t), tau_est(t), &
+                     tau(l), prev_tau(l), tau_diff(l), prev_tau_diff(l), &
+                     wind_speed_adj(l))
+-               ur(l) = max(1.0_r8, wind_speed_adj(l) + ugust(t))
++               ur(l) = max(1.0_r8, sqrt(wind_speed_adj(l)**2 + ugust(t)**2))
+             end if
+ 
+             ! Canyon top wind
+diff --git a/components/elm/src/cpl/lnd_downscale_atm_forcing.F90 b/components/elm/src/cpl/lnd_downscale_atm_forcing.F90
+index 2b2ffc3d514b..99b03a2e25ae 100644
+--- a/components/elm/src/cpl/lnd_downscale_atm_forcing.F90
++++ b/components/elm/src/cpl/lnd_downscale_atm_forcing.F90
+@@ -64,6 +64,7 @@ subroutine downscale_atm_forcing_to_topounit(g, i, x2l, lnd2atm_vars)
+     use elm_varctl      , only : glcmec_downscale_rain_snow_convert
+     use domainMod       , only : ldomain
+     use QsatMod         , only : Qsat
++    use FrictionVelocityMod, only: atm_gustiness
+     !
+     ! !ARGUMENTS:
+     integer                    , intent(in)    :: g  
+@@ -225,10 +226,16 @@ subroutine downscale_atm_forcing_to_topounit(g, i, x2l, lnd2atm_vars)
+              top_as%ubot(t)    = x2l(index_x2l_Sa_u,i)         ! forc_uxy  Atm state m/s
+              top_as%vbot(t)    = x2l(index_x2l_Sa_v,i)         ! forc_vxy  Atm state m/s
+              top_as%zbot(t)    = x2l(index_x2l_Sa_z,i)         ! zgcmxy    Atm state m
++             if (atm_gustiness) then
++                top_as%ugust(t)  = x2l(index_x2l_Sa_ugust,i)   ! ugust     Atm state m/s
++             end if
+ 		 
+              ! assign the state forcing fields derived from other inputs
+              ! Horizontal windspeed (m/s)
+              top_as%windbot(t) = sqrt(top_as%ubot(t)**2 + top_as%vbot(t)**2)
++             if (atm_gustiness) then
++                top_as%windbot(t) = sqrt(top_as%windbot(t)**2 + top_as%ugust(t)**2)
++             end if
+              ! Relative humidity (percent)
+              if (top_as%tbot(t) > SHR_CONST_TKFRZ) then
+                 e = esatw(tdc(top_as%tbot(t)))
+@@ -257,6 +264,9 @@ subroutine downscale_atm_forcing_to_topounit(g, i, x2l, lnd2atm_vars)
+              top_as%ubot(t)    = x2l(index_x2l_Sa_u,i)         ! forc_uxy  Atm state m/s
+              top_as%vbot(t)    = x2l(index_x2l_Sa_v,i)         ! forc_vxy  Atm state m/s
+              top_as%zbot(t)    = x2l(index_x2l_Sa_z,i)         ! zgcmxy    Atm state m
++             if (atm_gustiness) then
++                top_as%ugust(t)  = x2l(index_x2l_Sa_ugust,i)   ! ugust     Atm state m/s
++             end if
+           
+              sum_qbot_g = sum_qbot_g + top_pp%wtgcell(t)*top_as%qbot(t)
+              sum_wtsq_g = sum_wtsq_g + top_pp%wtgcell(t)
+@@ -264,6 +274,9 @@ subroutine downscale_atm_forcing_to_topounit(g, i, x2l, lnd2atm_vars)
+              ! assign the state forcing fields derived from other inputs
+              ! Horizontal windspeed (m/s)
+              top_as%windbot(t) = sqrt(top_as%ubot(t)**2 + top_as%vbot(t)**2)
++             if (atm_gustiness) then
++                top_as%windbot(t) = sqrt(top_as%windbot(t)**2 + top_as%ugust(t)**2)
++             end if
+              ! partial pressure of oxygen (Pa)
+              top_as%po2bot(t) = o2_molar_const * top_as%pbot(t)
+              ! air density (kg/m**3) - uses a temporary calculation
+@@ -342,10 +355,16 @@ subroutine downscale_atm_forcing_to_topounit(g, i, x2l, lnd2atm_vars)
+        top_as%ubot(t)    = x2l(index_x2l_Sa_u,i)         ! forc_uxy  Atm state m/s
+        top_as%vbot(t)    = x2l(index_x2l_Sa_v,i)         ! forc_vxy  Atm state m/s
+        top_as%zbot(t)    = x2l(index_x2l_Sa_z,i)         ! zgcmxy    Atm state m
++       if (atm_gustiness) then
++          top_as%ugust(t)  = x2l(index_x2l_Sa_ugust,i)   ! ugust     Atm state m/s
++       end if
+ 		 
+        ! assign the state forcing fields derived from other inputs
+        ! Horizontal windspeed (m/s)
+        top_as%windbot(t) = sqrt(top_as%ubot(t)**2 + top_as%vbot(t)**2)
++       if (atm_gustiness) then
++          top_as%windbot(t) = sqrt(top_as%windbot(t)**2 + top_as%ugust(t)**2)
++       end if
+        ! Relative humidity (percent)
+        if (top_as%tbot(t) > SHR_CONST_TKFRZ) then
+           e = esatw(tdc(top_as%tbot(t)))
+diff --git a/components/elm/src/cpl/lnd_import_export.F90 b/components/elm/src/cpl/lnd_import_export.F90
+index 4626142e0006..71d9ee986797 100644
+--- a/components/elm/src/cpl/lnd_import_export.F90
++++ b/components/elm/src/cpl/lnd_import_export.F90
+@@ -1049,7 +1049,7 @@ subroutine lnd_import( bounds, x2l, atm2lnd_vars, glc2lnd_vars, lnd2atm_vars)
+          ! Horizontal windspeed (m/s)
+          top_as%windbot(topo) = sqrt(top_as%ubot(topo)**2 + top_as%vbot(topo)**2)
+          if (atm_gustiness) then
+-            top_as%windbot(topo) = top_as%windbot(topo) + top_as%ugust(topo)
++            top_as%windbot(topo) = sqrt(top_as%windbot(topo)**2 + top_as%ugust(topo)**2)
+          end if
+          ! Relative humidity (percent)
+          if (top_as%tbot(topo) > SHR_CONST_TKFRZ) then
+@@ -1148,9 +1148,9 @@ subroutine lnd_import( bounds, x2l, atm2lnd_vars, glc2lnd_vars, lnd2atm_vars)
+            ! assign the state forcing fields derived from other inputs
+            ! Horizontal windspeed (m/s)
+            top_as%windbot(topo) = sqrt(top_as%ubot(topo)**2 + top_as%vbot(topo)**2)
+-         if (atm_gustiness) then
+-            top_as%windbot(topo) = top_as%windbot(topo) + top_as%ugust(topo)
+-         end if
++           if (atm_gustiness) then
++              top_as%windbot(topo) = sqrt(top_as%windbot(topo)**2 + top_as%ugust(topo)**2)
++           end if
+            ! Relative humidity (percent)
+            if (top_as%tbot(topo) > SHR_CONST_TKFRZ) then
+             e = esatw(tdc(top_as%tbot(topo)))
+diff --git a/share/util/shr_flux_mod.F90 b/share/util/shr_flux_mod.F90
+index 1b06dc255cc3..ff8b30bc5286 100644
+--- a/share/util/shr_flux_mod.F90
++++ b/share/util/shr_flux_mod.F90
+@@ -337,7 +337,7 @@ SUBROUTINE shr_flux_atmOcn(nMax  ,zbot  ,ubot  ,vbot  ,thbot ,   &
+         wind0 = max(sqrt((ubot(n) - us(n))**2 + (vbot(n) - vs(n))**2), 0.01_r8)
+         vmag = wind0
+         if (present(ugust)) then
+-           vmag = vmag + ugust(n)
++           vmag = sqrt(vmag**2 + ugust(n)**2)
+         end if
+         vmag = max(seq_flux_atmocn_minwind, vmag)
+         if (use_coldair_outbreak_mod) then
+@@ -382,7 +382,7 @@ SUBROUTINE shr_flux_atmOcn(nMax  ,zbot  ,ubot  ,vbot  ,thbot ,   &
+                 tau, prev_tau, tau_diff, prev_tau_diff, wind_adj)
+            vmag = wind_adj
+            if (present(ugust)) then
+-              vmag = vmag + ugust(n)
++              vmag = sqrt(vmag**2 + ugust(n)**2)
+            end if
+            vmag = max(seq_flux_atmocn_minwind, vmag)
+         else
+@@ -431,7 +431,7 @@ SUBROUTINE shr_flux_atmOcn(nMax  ,zbot  ,ubot  ,vbot  ,thbot ,   &
+                    tau, prev_tau, tau_diff, prev_tau_diff, wind_adj)
+               vmag = wind_adj
+               if (present(ugust)) then
+-                 vmag = vmag + ugust(n)
++                 vmag = sqrt(vmag**2 + ugust(n)**2)
+               end if
+               vmag = max(seq_flux_atmocn_minwind, vmag)
+            end if
+
+From 39382399bf59b8ab5c9a625d1a9c45f69ffdf7a5 Mon Sep 17 00:00:00 2001
+From: Sean Patrick Santos <SeanPatrickSantos@gmail.com>
+Date: Wed, 9 Aug 2023 19:52:46 -0700
+Subject: [PATCH 3/5] Add support for atmosphere-supplied gustiness to
+ MPAS-Seaice.
+
+When ATM_SUPPLIES_GUSTINESS=TRUE, the atmosphere model provides a "ugust" field
+that should be used to enhance mean winds for certain surface flux calculations.
+Support for this feature was added to CICE in the past; this commit ports those
+changes to MPAS-Seaice. It also is part of the fix for #5834, which requires
+all components that calculate fluxes to the atmosphere to respect
+ATM_SUPPLIES_GUSTINESS.
+
+[CC] when ATM_SUPPLIES_GUSTINESS=TRUE (i.e. for EAM runs), otherwise
+bit-for-bit.
+---
+ components/mpas-seaice/driver/ice_comp_mct.F       | 12 ++++++++++++
+ components/mpas-seaice/driver/mpassi_cpl_indices.F |  2 ++
+ components/mpas-seaice/src/Registry.xml            |  6 ++++++
+ components/mpas-seaice/src/column/ice_atmo.F90     | 13 ++++++++-----
+ components/mpas-seaice/src/column/ice_colpkg.F90   |  6 ++++++
+ .../mpas-seaice/src/shared/mpas_seaice_column.F    |  8 ++++++++
+ .../mpas-seaice/src/shared/mpas_seaice_forcing.F   | 14 +++++++++++++-
+ .../src/shared/mpas_seaice_initialize.F            |  4 +++-
+ 8 files changed, 58 insertions(+), 7 deletions(-)
+
+diff --git a/components/mpas-seaice/driver/ice_comp_mct.F b/components/mpas-seaice/driver/ice_comp_mct.F
+index 4350034168b4..1df29438009c 100644
+--- a/components/mpas-seaice/driver/ice_comp_mct.F
++++ b/components/mpas-seaice/driver/ice_comp_mct.F
+@@ -1821,6 +1821,7 @@ subroutine ice_import_mct(x2i_i, errorCode)!{{{
+       snowfallRateField,                &
+       uAirVelocityField,                &
+       vAirVelocityField,                &
++      uGustField,                       &
+       oceanNitrateConcField,            &
+       oceanSilicateConcField,           &
+       oceanAmmoniumConcField,           &
+@@ -1864,6 +1865,7 @@ subroutine ice_import_mct(x2i_i, errorCode)!{{{
+       snowfallRate,                &
+       uAirVelocity,                &
+       vAirVelocity,                &
++      uGust,                       &
+       oceanNitrateConc,            &
+       oceanSilicateConc,           &
+       oceanAmmoniumConc,           &
+@@ -1940,6 +1942,7 @@ subroutine ice_import_mct(x2i_i, errorCode)!{{{
+       call mpas_pool_get_array(atmosCoupling, 'snowfallRate', snowfallRate)
+       call mpas_pool_get_array(atmosCoupling, 'uAirVelocity', uAirVelocity)
+       call mpas_pool_get_array(atmosCoupling, 'vAirVelocity', vAirVelocity)
++      call mpas_pool_get_array(atmosCoupling, 'uGust', uGust)
+ 
+       if (config_use_aerosols) then
+          call mpas_pool_get_subpool(block_ptr % structs, 'aerosols', aerosols)
+@@ -2028,6 +2031,13 @@ subroutine ice_import_mct(x2i_i, errorCode)!{{{
+         snowfallRate(i)                = x2i_i % rAttr(index_x2i_Faxa_snow, n)
+         uAirVelocity(i)                = x2i_i % rAttr(index_x2i_Sa_u, n)
+         vAirVelocity(i)                = x2i_i % rAttr(index_x2i_Sa_v, n)
++        if (index_x2i_Sa_ugust == 0) then
++           ! In this case, no gustiness field was exported; set to 0.
++           uGust(i)                    = 0.
++        else
++           ! Set gustiness from atmosphere coupling field.
++           uGust(i)                  = x2i_i % rAttr(index_x2i_Sa_ugust, n)
++        end if
+ 
+         ! set aerosols, if configured
+         if (config_use_aerosols) then
+@@ -2172,6 +2182,7 @@ subroutine ice_import_mct(x2i_i, errorCode)!{{{
+    call mpas_pool_get_field(atmosCoupling, 'snowfallRate', snowfallRateField)
+    call mpas_pool_get_field(atmosCoupling, 'uAirVelocity', uAirVelocityField)
+    call mpas_pool_get_field(atmosCoupling, 'vAirVelocity', vAirVelocityField)
++   call mpas_pool_get_field(atmosCoupling, 'uGust', uGustField)
+ 
+    if (config_use_aerosols) then
+       call mpas_pool_get_subpool(domain % blocklist % structs, 'aerosols', aerosols)
+@@ -2225,6 +2236,7 @@ subroutine ice_import_mct(x2i_i, errorCode)!{{{
+    call mpas_dmpar_exch_halo_field(snowfallRateField)
+    call mpas_dmpar_exch_halo_field(uAirVelocityField)
+    call mpas_dmpar_exch_halo_field(vAirVelocityField)
++   call mpas_dmpar_exch_halo_field(uGustField)
+ 
+    if (config_use_aerosols) then
+       call mpas_dmpar_exch_halo_field(atmosAerosolFluxField)
+diff --git a/components/mpas-seaice/driver/mpassi_cpl_indices.F b/components/mpas-seaice/driver/mpassi_cpl_indices.F
+index c08e9847747c..4335827e15e1 100644
+--- a/components/mpas-seaice/driver/mpassi_cpl_indices.F
++++ b/components/mpas-seaice/driver/mpassi_cpl_indices.F
+@@ -70,6 +70,7 @@ module mpassi_cpl_indices
+   integer :: index_x2i_Sa_z            ! bottom atm level height
+   integer :: index_x2i_Sa_u            ! bottom atm level zon wind
+   integer :: index_x2i_Sa_v            ! bottom atm level mer wind
++  integer :: index_x2i_Sa_ugust        ! wind response to stress
+   integer :: index_x2i_Sa_tbot         ! bottom atm level temp
+   integer :: index_x2i_Sa_pbot         ! bottom atm level pressure
+   integer :: index_x2i_Sa_ptem         ! bottom atm level pot temp
+@@ -198,6 +199,7 @@ subroutine mpassi_cpl_indices_set( )
+     index_x2i_Sa_z          = mct_avect_indexra(x2i,'Sa_z')
+     index_x2i_Sa_u          = mct_avect_indexra(x2i,'Sa_u')
+     index_x2i_Sa_v          = mct_avect_indexra(x2i,'Sa_v')
++    index_x2i_Sa_ugust      = mct_avect_indexra(x2i,'Sa_ugust', perrWith='quiet')
+     index_x2i_Sa_tbot       = mct_avect_indexra(x2i,'Sa_tbot')
+     index_x2i_Sa_ptem       = mct_avect_indexra(x2i,'Sa_ptem')
+     index_x2i_Sa_pbot       = mct_avect_indexra(x2i,'Sa_pbot')
+diff --git a/components/mpas-seaice/src/Registry.xml b/components/mpas-seaice/src/Registry.xml
+index 7f2740fba876..6b05a554087f 100644
+--- a/components/mpas-seaice/src/Registry.xml
++++ b/components/mpas-seaice/src/Registry.xml
+@@ -3745,6 +3745,12 @@
+ 		     units="m s-1"
+ 		     default_value="5.0"
+ 		/>
++		<var name="uGust"
++		     type="real"
++		     dimensions="nCells Time"
++		     units="m s-1"
++		     default_value="0.0"
++		/>
+ 		<var name="atmosReferenceSpeed10m"
+ 		     type="real"
+ 		     dimensions="nCells Time"
+diff --git a/components/mpas-seaice/src/column/ice_atmo.F90 b/components/mpas-seaice/src/column/ice_atmo.F90
+index 93faaee609e3..60c3fd98e602 100644
+--- a/components/mpas-seaice/src/column/ice_atmo.F90
++++ b/components/mpas-seaice/src/column/ice_atmo.F90
+@@ -50,7 +50,8 @@ subroutine atmo_boundary_layer (sfctype,            &
+                                       calc_strair, formdrag, &
+                                       highfreq, natmiter, &
+                                       Tsf,      potT,     &
+-                                      uatm,     vatm,     &  
++                                      uatm,     vatm,     &
++                                      ugust,              &
+                                       wind,     zlvl,     &  
+                                       Qa,       rhoa,     &
+                                       strx,     stry,     &   
+@@ -78,6 +79,7 @@ subroutine atmo_boundary_layer (sfctype,            &
+          potT     , & ! air potential temperature  (K)
+          uatm     , & ! x-direction wind speed (m/s)
+          vatm     , & ! y-direction wind speed (m/s)
++         ugust    , & ! sub-grid-scale gustiness (m/s)
+          wind     , & ! wind speed (m/s)
+          zlvl     , & ! atm level height (m)
+          Qa       , & ! specific humidity (kg/kg)
+@@ -206,7 +208,8 @@ subroutine atmo_boundary_layer (sfctype,            &
+ 
+             if (highfreq) then
+                vmag = max(umin, sqrt( (uatm-uvel)**2 + &
+-                                      (vatm-vvel)**2) )
++                                      (vatm-vvel)**2 + &
++                                      ugust**2 ) )
+             else
+                vmag = max(umin, wind)
+             endif
+@@ -318,8 +321,8 @@ subroutine atmo_boundary_layer (sfctype,            &
+             tau = rhoa * rd * rd ! not the stress at zlvl
+ 
+             ! high frequency momentum coupling following Roberts et al. (2014)
+-            strx = tau * sqrt((uatm-uvel)**2 + (vatm-vvel)**2) * (uatm-uvel)
+-            stry = tau * sqrt((uatm-uvel)**2 + (vatm-vvel)**2) * (vatm-vvel)
++            strx = tau * sqrt((uatm-uvel)**2 + (vatm-vvel)**2 + ugust**2 ) * (uatm-uvel)
++            stry = tau * sqrt((uatm-uvel)**2 + (vatm-vvel)**2 + ugust**2 ) * (vatm-vvel)
+ 
+          else
+ 
+@@ -383,7 +386,7 @@ end subroutine atmo_boundary_layer
+ ! (2) reference temperature and humidity are NOT computed
+ 
+       subroutine atmo_boundary_const (sfctype,  calc_strair, &
+-                                      uatm,     vatm,     &  
++                                      uatm,     vatm,     &
+                                       wind,     rhoa,     &
+                                       strx,     stry,     &   
+                                       Tsf,      potT,     &
+diff --git a/components/mpas-seaice/src/column/ice_colpkg.F90 b/components/mpas-seaice/src/column/ice_colpkg.F90
+index ea07898d69f5..c28684075842 100644
+--- a/components/mpas-seaice/src/column/ice_colpkg.F90
++++ b/components/mpas-seaice/src/column/ice_colpkg.F90
+@@ -1818,6 +1818,7 @@ subroutine colpkg_step_therm1(dt, ncat, nilyr, nslyr, n_aero, &
+                                     rsnw        , use_smliq_pnd,&
+                                     aerosno     , aeroice     , &
+                                     uatm        , vatm        , &
++                                    ugust       ,               &
+                                     wind        , zlvl        , &
+                                     Qa          , rhoa        , &
+                                     Tair        , Tref        , &
+@@ -1916,6 +1917,7 @@ subroutine colpkg_step_therm1(dt, ncat, nilyr, nslyr, n_aero, &
+          zlvl        , & ! atm level height (m)
+          uatm        , & ! wind velocity components (m/s)
+          vatm        , &
++         ugust       , & ! sub-grid-scale gustiness (m/s)
+          wind        , & ! wind speed (m/s)
+          potT        , & ! air potential temperature  (K)
+          Tair        , & ! air temperature  (K)
+@@ -2164,6 +2166,7 @@ subroutine colpkg_step_therm1(dt, ncat, nilyr, nslyr, n_aero, &
+                call colpkg_atm_boundary( 'ice',                  &
+                                         Tsfc(n),  potT,          &
+                                         uatm,     vatm,          &
++                                        ugust,                   &
+                                         wind,     zlvl,          &
+                                         Qa,       rhoa,          &
+                                         strairxn, strairyn,      &
+@@ -3628,6 +3631,7 @@ end subroutine colpkg_ice_strength
+       subroutine colpkg_atm_boundary(sfctype,                    &
+                                      Tsf,         potT,          &
+                                      uatm,        vatm,          &
++                                     ugust,                      &
+                                      wind,        zlvl,          &
+                                      Qa,          rhoa,          &
+                                      strx,        stry,          &
+@@ -3650,6 +3654,7 @@ subroutine colpkg_atm_boundary(sfctype,                    &
+          potT     , & ! air potential temperature  (K)
+          uatm     , & ! x-direction wind speed (m/s)
+          vatm     , & ! y-direction wind speed (m/s)
++         ugust    , & ! sub-grid-scale gustiness (m/s)
+          wind     , & ! wind speed (m/s)
+          zlvl     , & ! atm level height (m)
+          Qa       , & ! specific humidity (kg/kg)
+@@ -3708,6 +3713,7 @@ subroutine colpkg_atm_boundary(sfctype,                    &
+                                             highfreq, natmiter,      &
+                                             Tsf,      potT,          &
+                                             uatm,     vatm,          &
++                                            ugust,                   &
+                                             wind,     zlvl,          &
+                                             Qa,       rhoa,          &
+                                             strx,     stry,          &
+diff --git a/components/mpas-seaice/src/shared/mpas_seaice_column.F b/components/mpas-seaice/src/shared/mpas_seaice_column.F
+index 49251faa002b..4e4d4dc7626e 100644
+--- a/components/mpas-seaice/src/shared/mpas_seaice_column.F
++++ b/components/mpas-seaice/src/shared/mpas_seaice_column.F
+@@ -1351,6 +1351,7 @@ subroutine column_vertical_thermodynamics(domain, clock)
+          vvelocityCell, &
+          uAirVelocity, &
+          vAirVelocity, &
++         uGust, &
+          windSpeed, &
+          airLevelHeight, &
+          airSpecificHumidity, &
+@@ -1581,6 +1582,7 @@ subroutine column_vertical_thermodynamics(domain, clock)
+ 
+        call MPAS_pool_get_array(atmos_coupling, "uAirVelocity", uAirVelocity)
+        call MPAS_pool_get_array(atmos_coupling, "vAirVelocity", vAirVelocity)
++       call MPAS_pool_get_array(atmos_coupling, "uGust", uGust)
+        call MPAS_pool_get_array(atmos_coupling, "airLevelHeight", airLevelHeight)
+        call MPAS_pool_get_array(atmos_coupling, "airSpecificHumidity", airSpecificHumidity)
+        call MPAS_pool_get_array(atmos_coupling, "airDensity", airDensity)
+@@ -1788,6 +1790,7 @@ subroutine column_vertical_thermodynamics(domain, clock)
+                specificIceAerosol(:,:,:), &
+                uAirVelocity(iCell), &
+                vAirVelocity(iCell), &
++               uGust(iCell), &
+                windSpeed(iCell), &
+                airLevelHeight(iCell), &
+                airSpecificHumidity(iCell), &
+@@ -1947,6 +1950,7 @@ subroutine column_vertical_thermodynamics(domain, clock)
+              endif
+              call mpas_log_write("uAirVelocity: $r", messageType=MPAS_LOG_ERR, realArgs=(/uAirVelocity(iCell)/))
+              call mpas_log_write("vAirVelocity: $r", messageType=MPAS_LOG_ERR, realArgs=(/vAirVelocity(iCell)/))
++             call mpas_log_write("uGust: $r", messageType=MPAS_LOG_ERR, realArgs=(/uGust(iCell)/))
+              call mpas_log_write("windSpeed: $r", messageType=MPAS_LOG_ERR, realArgs=(/windSpeed(iCell)/))
+              call mpas_log_write("airLevelHeight: $r", messageType=MPAS_LOG_ERR, realArgs=(/airLevelHeight(iCell)/))
+              call mpas_log_write("airSpecificHumidity: $r", messageType=MPAS_LOG_ERR, realArgs=(/airSpecificHumidity(iCell)/))
+@@ -5385,6 +5389,7 @@ subroutine seaice_column_ocean_mixed_layer(domain)
+          airSpecificHumidity, &
+          uAirVelocity, &
+          vAirVelocity, &
++         uGust, &
+          windSpeed, &
+          airLevelHeight, &
+          airDensity, &
+@@ -5466,6 +5471,7 @@ subroutine seaice_column_ocean_mixed_layer(domain)
+        call MPAS_pool_get_array(atmosCoupling, "airPotentialTemperature", airPotentialTemperature)
+        call MPAS_pool_get_array(atmosCoupling, "uAirVelocity", uAirVelocity)
+        call MPAS_pool_get_array(atmosCoupling, "vAirVelocity", vAirVelocity)
++       call MPAS_pool_get_array(atmosCoupling, "uGust", uGust)
+        call MPAS_pool_get_array(atmosCoupling, "airLevelHeight", airLevelHeight)
+        call MPAS_pool_get_array(atmosCoupling, "airSpecificHumidity", airSpecificHumidity)
+        call MPAS_pool_get_array(atmosCoupling, "airDensity", airDensity)
+@@ -5510,6 +5516,7 @@ subroutine seaice_column_ocean_mixed_layer(domain)
+                   airPotentialTemperature(iCell), &
+                   uAirVelocity(iCell), &
+                   vAirVelocity(iCell), &
++                  uGust(iCell), &
+                   windSpeed(iCell), &
+                   airLevelHeight(iCell), &
+                   airSpecificHumidity(iCell), &
+@@ -5570,6 +5577,7 @@ subroutine seaice_column_ocean_mixed_layer(domain)
+                   airPotentialTemperature(iCell), &
+                   uAirVelocity(iCell), &
+                   vAirVelocity(iCell), &
++                  uGust(iCell), &
+                   windSpeed(iCell), &
+                   airLevelHeight(iCell), &
+                   airSpecificHumidity(iCell), &
+diff --git a/components/mpas-seaice/src/shared/mpas_seaice_forcing.F b/components/mpas-seaice/src/shared/mpas_seaice_forcing.F
+index e5c82692d75c..b7c99578d91c 100644
+--- a/components/mpas-seaice/src/shared/mpas_seaice_forcing.F
++++ b/components/mpas-seaice/src/shared/mpas_seaice_forcing.F
+@@ -757,6 +757,7 @@ subroutine prepare_atmospheric_coupling_variables_CORE(block)
+          airTemperature, &
+          airSpecificHumidity, &
+          airDensity, &
++         uGust, &
+          shortwaveDown, &
+          shortwaveVisibleDirectDown, &
+          shortwaveVisibleDiffuseDown, &
+@@ -806,6 +807,7 @@ subroutine prepare_atmospheric_coupling_variables_CORE(block)
+     call MPAS_pool_get_array(atmosCoupling, "airTemperature", airTemperature)
+     call MPAS_pool_get_array(atmosCoupling, "airSpecificHumidity", airSpecificHumidity)
+     call MPAS_pool_get_array(atmosCoupling, "airDensity", airDensity)
++    call MPAS_pool_get_array(atmosCoupling, "uGust", uGust)
+     call MPAS_pool_get_array(atmosCoupling, "shortwaveVisibleDirectDown", shortwaveVisibleDirectDown)
+     call MPAS_pool_get_array(atmosCoupling, "shortwaveVisibleDiffuseDown", shortwaveVisibleDiffuseDown)
+     call MPAS_pool_get_array(atmosCoupling, "shortwaveIRDirectDown", shortwaveIRDirectDown)
+@@ -876,6 +878,9 @@ subroutine prepare_atmospheric_coupling_variables_CORE(block)
+        ! air density
+        airDensity(iCell) = 1.3_RKIND
+ 
++       ! gustiness
++       uGust(iCell) = 0.0_RKIND
++
+        ! longwave radiation
+        call longwave_rosati_miyakoda(&
+             longwaveDown(iCell), &
+@@ -929,6 +934,7 @@ subroutine prepare_atmospheric_coupling_variables_ISPOL(block)
+          airTemperature, &
+          airSpecificHumidity, &
+          airDensity, &
++         uGust, &
+          shortwaveDown, &
+          shortwaveVisibleDirectDown, &
+          shortwaveVisibleDiffuseDown, &
+@@ -970,6 +976,7 @@ subroutine prepare_atmospheric_coupling_variables_ISPOL(block)
+     call MPAS_pool_get_array(atmosCoupling, "airTemperature", airTemperature)
+     call MPAS_pool_get_array(atmosCoupling, "airSpecificHumidity", airSpecificHumidity)
+     call MPAS_pool_get_array(atmosCoupling, "airDensity", airDensity)
++    call MPAS_pool_get_array(atmosCoupling, "uGust", uGust)
+     call MPAS_pool_get_array(atmosCoupling, "shortwaveVisibleDirectDown", shortwaveVisibleDirectDown)
+     call MPAS_pool_get_array(atmosCoupling, "shortwaveVisibleDiffuseDown", shortwaveVisibleDiffuseDown)
+     call MPAS_pool_get_array(atmosCoupling, "shortwaveIRDirectDown", shortwaveIRDirectDown)
+@@ -1028,6 +1035,9 @@ subroutine prepare_atmospheric_coupling_variables_ISPOL(block)
+        ! air density
+        airDensity(iCell) = 1.3_RKIND
+ 
++       ! gustiness
++       uGust(iCell) = 0.0_RKIND
++
+        ! precipitation
+ 
+        ! divide total precipitation between rain and snow
+@@ -1075,6 +1085,7 @@ subroutine post_atmospheric_coupling(block)
+          shortwaveIRDiffuseDown, &
+          uAirVelocity, &
+          vAirVelocity, &
++         uGust, &
+          windSpeed, &
+          shortwaveDown, &
+          latCell, &
+@@ -1118,6 +1129,7 @@ subroutine post_atmospheric_coupling(block)
+     call MPAS_pool_get_array(atmosCoupling, "shortwaveIRDiffuseDown", shortwaveIRDiffuseDown)
+     call MPAS_pool_get_array(atmosCoupling, "uAirVelocity", uAirVelocity)
+     call MPAS_pool_get_array(atmosCoupling, "vAirVelocity", vAirVelocity)
++    call MPAS_pool_get_array(atmosCoupling, "uGust", uGust)
+ 
+     call MPAS_pool_get_array(atmosForcing, "windSpeed", windSpeed)
+     call MPAS_pool_get_array(atmosForcing, "shortwaveDown", shortwaveDown)
+@@ -1125,7 +1137,7 @@ subroutine post_atmospheric_coupling(block)
+     do iCell = 1, nCellsSolve
+ 
+        ! wind speed
+-       windSpeed(iCell) = sqrt(uAirVelocity(iCell)**2 + vAirVelocity(iCell)**2)
++       windSpeed(iCell) = sqrt(uAirVelocity(iCell)**2 + vAirVelocity(iCell)**2 + uGust(iCell)**2)
+ 
+     enddo ! iCell
+ 
+diff --git a/components/mpas-seaice/src/shared/mpas_seaice_initialize.F b/components/mpas-seaice/src/shared/mpas_seaice_initialize.F
+index 77fb3a7f2c84..658216386d8d 100644
+--- a/components/mpas-seaice/src/shared/mpas_seaice_initialize.F
++++ b/components/mpas-seaice/src/shared/mpas_seaice_initialize.F
+@@ -2281,6 +2281,7 @@ subroutine initialize_coupler_fields(domain)
+     real(kind=RKIND), dimension(:), pointer :: &
+          uAirVelocity, &
+          vAirVelocity, &
++         uGust, &
+          seaSurfaceSalinity, &
+          seaFreezingTemperature, &
+          seaSurfaceTemperature, &
+@@ -2348,10 +2349,11 @@ subroutine initialize_coupler_fields(domain)
+ 
+        call MPAS_pool_get_array(atmosCoupling, "uAirVelocity", uAirVelocity)
+        call MPAS_pool_get_array(atmosCoupling, "vAirVelocity", vAirVelocity)
++       call MPAS_pool_get_array(atmosCoupling, "uGust", uGust)
+ 
+        call MPAS_pool_get_array(atmosForcing, "windSpeed", windSpeed)
+ 
+-       windSpeed = sqrt(uAirVelocity**2 + vAirVelocity**2)
++       windSpeed = sqrt(uAirVelocity**2 + vAirVelocity**2 + uGust**2)
+ 
+        !-------------------------------------------------------------
+        ! Physics fluxes received from ocean
+
+From e978403f652ef9132a4c64a17d4244fb78be36ba Mon Sep 17 00:00:00 2001
+From: Sean Patrick Santos <SeanPatrickSantos@gmail.com>
+Date: Mon, 31 Jul 2023 16:16:07 -0700
+Subject: [PATCH 4/5] Remove gustiness from U10 and add U10WITHGUSTS.
+
+The E3SM wind at the 10 meter reference level (an output from the
+atmosphere, land, and sea ice components) has previously included the
+effects of gustiness, but this is not correct for comparison to most
+other data sets. This commit therefore removes the effect of gustiness
+from these outputs. See #5836.
+
+Note that MPAS-Ocean does not output such a wind itself, only the
+mean-squared wind, which is used solely to determine flux of tracers
+and should in fact include gustiness. Therefore, MPAS-Ocean has not
+been changed.
+
+This change applies to both atmosphere-calculated gustiness, and the
+land-calculated gustiness used in cases where ELM is active but EAM is
+not. (E.g. in ELM, both `ugust` from the atmosphere and `wc` from ELM
+are removed from ELM's u10 calculation.) The removal of the gustiness
+is accomplished by changes that effectively multply u10 by a factor of
+`ubot / sqrt(ubot^2 + ugust^2 + wc^2)`
+where `ubot` is the resolved wind speed in the atmosphere's lowest
+level. Similar expressions (without the `wc` term) are used in the
+ocean coupling code and MPAS-Seaice.
+
+For those cases where a gustiness-enhanced output may be useful, for
+instance where it is desirable to know which wind was used to
+calculate surface energy fluxes, or for comparison to previous model
+versions. This commit therefore adds the diagnostic output
+U10WITHGUSTS to EAM. This is defined identically to to the old
+definition of U10.
+
+[non-BFB], but only the U10 outputs of EAM and ELM, and
+atmosReferenceSpeed10m in MPAS-Seaice, should be affected, and only in
+cases where EAM or ELM.
+---
+ .../cice/src/drivers/cpl/CICE_RunMod.F90      | 11 ++++---
+ .../cice/src/drivers/cpl/ice_cpl_indices.F90  |  2 ++
+ .../src/drivers/cpl/ice_import_export.F90     |  3 +-
+ components/cice/src/source/ice_atmo.F90       |  8 +++--
+ components/cice/src/source/ice_flux.F90       | 19 ++++++++++--
+ components/cice/src/source/ice_ocean.F90      |  3 +-
+ components/eam/src/control/camsrfexch.F90     |  6 ++++
+ components/eam/src/cpl/atm_import_export.F90  |  1 +
+ components/eam/src/cpl/cam_cpl_indices.F90    |  2 ++
+ .../eam/src/physics/cam/cam_diagnostics.F90   |  2 ++
+ .../src/biogeophys/BareGroundFluxesMod.F90    |  5 +++-
+ .../elm/src/biogeophys/CanopyFluxesMod.F90    |  5 +++-
+ .../src/biogeophys/FrictionVelocityMod.F90    | 28 +++++++++++-------
+ .../src/biogeophys/FrictionVelocityType.F90   |  7 +++++
+ .../elm/src/biogeophys/LakeFluxesMod.F90      |  6 +++-
+ .../elm/src/biogeophys/UrbanFluxesMod.F90     |  5 +++-
+ components/elm/src/cpl/elm_cpl_indices.F90    |  2 ++
+ components/elm/src/cpl/lnd_import_export.F90  |  1 +
+ components/elm/src/main/lnd2atmMod.F90        |  7 +++++
+ components/elm/src/main/lnd2atmType.F90       |  2 ++
+ components/mpas-seaice/driver/ice_comp_mct.F  |  3 ++
+ .../mpas-seaice/driver/mpassi_cpl_indices.F   |  2 ++
+ components/mpas-seaice/src/Registry.xml       |  5 ++++
+ .../mpas-seaice/src/column/ice_atmo.F90       | 14 +++++++--
+ .../mpas-seaice/src/column/ice_colpkg.F90     | 24 +++++++++++----
+ .../src/column/ice_flux_colpkg.F90            | 13 +++++++--
+ .../src/shared/mpas_seaice_column.F           |  9 +++++-
+ .../src/shared/mpas_seaice_forcing.F          |  3 ++
+ driver-mct/main/seq_flux_mct.F90              | 29 +++++++++++++++----
+ driver-mct/shr/seq_flds_mod.F90               | 13 ++++++++-
+ share/util/shr_flux_mod.F90                   |  7 ++++-
+ 31 files changed, 201 insertions(+), 46 deletions(-)
+
+diff --git a/components/cice/src/drivers/cpl/CICE_RunMod.F90 b/components/cice/src/drivers/cpl/CICE_RunMod.F90
+index 4ecd55c55fbe..9d810978774e 100644
+--- a/components/cice/src/drivers/cpl/CICE_RunMod.F90
++++ b/components/cice/src/drivers/cpl/CICE_RunMod.F90
+@@ -178,6 +178,7 @@ subroutine step_therm1_iblk (dt, iblk)
+          strairxn    , & ! air/ice zonal  strss,              (N/m^2)
+          strairyn    , & ! air/ice merdnl strss,              (N/m^2)
+          Urefn       , & ! wind speed reference level         (m/s)
++         UrefWithGustsn, & ! wind speed reference level with gusts (m/s)
+          Trefn       , & ! air tmp reference level            (K)
+          Qrefn           ! air sp hum reference level         (kg/kg)
+ 
+@@ -316,7 +317,7 @@ subroutine step_therm1_iblk (dt, iblk)
+                                         wind(:,:,iblk), zlvl(:,:,iblk), &
+                                         Qa  (:,:,iblk), rhoa(:,:,iblk), &
+                                         strairxn,       strairyn,       &
+-                                        Urefn,                          &
++                                        Urefn,          UrefWithGustsn, &
+                                         Trefn,          Qrefn,          &
+                                         worka,          workb,          &
+                                         lhcoef,         shcoef)
+@@ -326,6 +327,7 @@ subroutine step_therm1_iblk (dt, iblk)
+ 
+             ! Initialize for safety
+             Urefn (:,:)  = c0
++            UrefWithGustsn (:,:)  = c0
+             Trefn (:,:)  = c0
+             Qrefn (:,:)  = c0
+             lhcoef(:,:)  = c0
+@@ -490,7 +492,7 @@ subroutine step_therm1_iblk (dt, iblk)
+                             dfswthrun_nopond(:,:,n,iblk),              &
+ #endif
+                             evapn,                                    &
+-                            Urefn,                                    &
++                            Urefn,              UrefWithGustsn,       &
+                             Trefn,              Qrefn,                &
+                             freshn,             fsaltn,               &
+                             fhocnn,             fswthrun(:,:,n,iblk), &
+@@ -514,7 +516,7 @@ subroutine step_therm1_iblk (dt, iblk)
+                             dfswint_nopond(:,:,iblk),dfswthru_nopond(:,:,iblk),&
+ #endif
+                             evap    (:,:,iblk),                       &
+-                            Uref    (:,:,iblk),                       &
++                            Uref    (:,:,iblk), UrefWithGusts(:,:,iblk),&
+                             Tref    (:,:,iblk), Qref      (:,:,iblk), &
+                             fresh   (:,:,iblk), fsalt   (:,:,iblk),   &
+                             fhocn   (:,:,iblk), fswthru (:,:,iblk),   &
+@@ -775,7 +777,8 @@ subroutine coupling_prep
+                             fsens    (:,:,iblk), flat    (:,:,iblk), &
+                             fswabs   (:,:,iblk), flwout  (:,:,iblk), &
+                             evap     (:,:,iblk),                     &
+-                            Uref     (:,:,iblk),                     &
++                            Uref     (:,:,iblk), UrefWithGusts(:,:,iblk), &
++                            ugust    (:,:,iblk),                     &
+                             Tref     (:,:,iblk), Qref    (:,:,iblk), &
+                             fresh    (:,:,iblk), fsalt   (:,:,iblk), &
+                             fhocn    (:,:,iblk), fswthru (:,:,iblk), &
+diff --git a/components/cice/src/drivers/cpl/ice_cpl_indices.F90 b/components/cice/src/drivers/cpl/ice_cpl_indices.F90
+index 4d72681d4f38..f6b0f73d1725 100644
+--- a/components/cice/src/drivers/cpl/ice_cpl_indices.F90
++++ b/components/cice/src/drivers/cpl/ice_cpl_indices.F90
+@@ -20,6 +20,7 @@ module ice_cpl_indices
+   integer :: index_i2x_Si_anidr        ! albedo: visible, diffuse        
+   integer :: index_i2x_Si_anidf        ! albedo: near ir, diffuse        
+   integer :: index_i2x_Si_u10          ! 10m wind
++  integer :: index_i2x_Si_u10withgusts ! 10m wind with gustiness included
+   integer :: index_i2x_Faii_lwup       ! upward longwave heat flux  
+   integer :: index_i2x_Faii_lat        ! latent          heat flux  
+   integer :: index_i2x_Faii_sen        ! sensible        heat flux      
+@@ -100,6 +101,7 @@ subroutine ice_cpl_indices_set( )
+     index_i2x_Si_anidf      = mct_avect_indexra(i2x,'Si_anidf')
+     index_i2x_Si_snowh      = mct_avect_indexra(i2x,'Si_snowh')
+     index_i2x_Si_u10        = mct_avect_indexra(i2x,'Si_u10')
++    index_i2x_Si_u10withgusts = mct_avect_indexra(i2x,'Si_u10withgusts')
+     index_i2x_Faii_taux     = mct_avect_indexra(i2x,'Faii_taux')
+     index_i2x_Faii_tauy     = mct_avect_indexra(i2x,'Faii_tauy')
+     index_i2x_Faii_lat      = mct_avect_indexra(i2x,'Faii_lat')
+diff --git a/components/cice/src/drivers/cpl/ice_import_export.F90 b/components/cice/src/drivers/cpl/ice_import_export.F90
+index 39d7ee1a7d26..a2dacd7df5ca 100644
+--- a/components/cice/src/drivers/cpl/ice_import_export.F90
++++ b/components/cice/src/drivers/cpl/ice_import_export.F90
+@@ -8,7 +8,7 @@ module ice_import_export
+   use ice_constants   , only: field_type_vector, c100
+   use ice_blocks      , only: block, get_block, nx_block, ny_block
+   use ice_flux        , only: strairxt, strairyt, strocnxt, strocnyt           
+-  use ice_flux        , only: alvdr, alidr, alvdf, alidf, Tref, Qref, Uref
++  use ice_flux        , only: alvdr, alidr, alvdf, alidf, Tref, Qref, Uref, UrefWithGusts
+   use ice_flux        , only: flat, fsens, flwout, evap, fswabs, fhocn, fswthru                                          
+   use ice_flux        , only: fresh, fsalt, zlvl, uatm, vatm, potT, Tair, Qa
+   use ice_flux        , only: rhoa, swvdr, swvdf, swidr, swidf, flw, frain
+@@ -457,6 +457,7 @@ subroutine ice_export( i2x )
+                 i2x(index_i2x_Si_avsdf ,n)    = alvdf(i,j,iblk)
+                 i2x(index_i2x_Si_anidf ,n)    = alidf(i,j,iblk)
+                 i2x(index_i2x_Si_u10  ,n)     = Uref(i,j,iblk)
++                i2x(index_i2x_Si_u10withgusts,n)     = UrefWithGusts(i,j,iblk)
+                 i2x(index_i2x_Si_tref  ,n)    = Tref(i,j,iblk)
+                 i2x(index_i2x_Si_qref  ,n)    = Qref(i,j,iblk)
+                 i2x(index_i2x_Si_snowh ,n)    = vsno(i,j,iblk) &
+diff --git a/components/cice/src/source/ice_atmo.F90 b/components/cice/src/source/ice_atmo.F90
+index cb6f6ad16abe..713cda976c3d 100644
+--- a/components/cice/src/source/ice_atmo.F90
++++ b/components/cice/src/source/ice_atmo.F90
+@@ -59,7 +59,8 @@ subroutine atmo_boundary_layer (nx_block, ny_block, &
+                                       wind,     zlvl,     &  
+                                       Qa,       rhoa,     &
+                                       strx,     stry,     &   
+-                                      Uref,               &
++                                      Uref,               &
++                                      UrefWithGusts,      &
+                                       Tref,     Qref,     &
+                                       delt,     delq,     &
+                                       lhcoef,   shcoef)
+@@ -120,6 +121,7 @@ subroutine atmo_boundary_layer (nx_block, ny_block, &
+ 
+       real (kind=dbl_kind), dimension (nx_block,ny_block), intent(out) :: &
+          Uref     , & ! reference height wind speed (m/s)
++         UrefWithGusts, & ! reference height wind speed with gusts (m/s)
+          Tref     , & ! reference height temperature  (K)
+          Qref     , & ! reference height specific humidity (kg/kg)
+          delt     , & ! potential T difference   (K)
+@@ -204,6 +206,7 @@ subroutine atmo_boundary_layer (nx_block, ny_block, &
+       do j = 1, ny_block
+       do i = 1, nx_block
+          Uref(i,j) = c0
++         UrefWithGusts(i,j) = c0
+          Tref(i,j) = c0
+          Qref(i,j) = c0
+          delt(i,j) = c0
+@@ -414,7 +417,8 @@ subroutine atmo_boundary_layer (nx_block, ny_block, &
+                   * (alz(ij) + al2 - psixh(ij) + psix2)
+          Qref(i,j)= Qa(i,j) - delq(i,j)*fac
+ 
+-         Uref(i,j)= vmag(ij) * rd(ij) / rdn(ij)
++         Uref(i,j)= windit(ij) * rd(ij) / rdn(ij)
++         UrefWithGusts(i,j)= vmag(ij) * rd(ij) / rdn(ij)
+       enddo                     ! ij
+ 
+       end subroutine atmo_boundary_layer
+diff --git a/components/cice/src/source/ice_flux.F90 b/components/cice/src/source/ice_flux.F90
+index 29e3e37edc07..17f8619a5981 100644
+--- a/components/cice/src/source/ice_flux.F90
++++ b/components/cice/src/source/ice_flux.F90
+@@ -174,6 +174,7 @@ module ice_flux
+          fswabs  , & ! shortwave flux absorbed in ice and ocean (W/m^2)
+          flwout  , & ! outgoing longwave radiation (W/m^2)
+          Uref    , & ! 10m reference wind speed (m/s)
++         UrefWithGusts, & ! 10m reference wind speed with gusts (m/s)
+          Tref    , & ! 2m atm reference temperature (K)
+          Qref    , & ! 2m atm reference spec humidity (kg/kg)
+          evap        ! evaporative water flux (kg/m^2/s)
+@@ -291,7 +292,8 @@ module ice_flux
+          alidr_ocn   , & ! near-ir, direct   (fraction)
+          alvdf_ocn   , & ! visible, diffuse  (fraction)
+          alidf_ocn   , & ! near-ir, diffuse  (fraction)
+-         Uref_ocn    , & ! 2m reference wind speed (m/s)
++         Uref_ocn    , & ! 10m reference wind speed (m/s)
++         UrefWithGusts_ocn    , & ! 10m reference wind speed with gusts (m/s)
+          Tref_ocn    , & ! 2m atm reference temperature (K)
+          Qref_ocn        ! 2m atm reference spec humidity (kg/kg)
+ 
+@@ -474,6 +476,7 @@ subroutine init_coupler_flux
+                         ! in case atm model diagnoses Tsfc from flwout
+       evap    (:,:,:) = c0
+       Uref    (:,:,:) = c0
++      UrefWithGusts(:,:,:) = c0
+       Tref    (:,:,:) = c0
+       Qref    (:,:,:) = c0
+       alvdr   (:,:,:) = c0
+@@ -597,6 +600,7 @@ subroutine init_flux_atm
+       flwout  (:,:,:) = c0
+       evap    (:,:,:) = c0
+       Uref    (:,:,:) = c0
++      UrefWithGusts(:,:,:) = c0
+       Tref    (:,:,:) = c0
+       Qref    (:,:,:) = c0
+ 
+@@ -788,6 +792,7 @@ subroutine merge_fluxes (nx_block, ny_block,   &
+ #endif
+                                evapn,                &
+                                Urefn,                &
++                               UrefWithGustsn,       &
+                                Trefn,    Qrefn,      &
+                                freshn,   fsaltn,     &
+                                fhocnn,   fswthrun,   &
+@@ -811,7 +816,8 @@ subroutine merge_fluxes (nx_block, ny_block,   &
+                                dfswint_nopond, dfswthru_nopond, &
+ #endif
+                                evap,                 & 
+-                               Uref,                 &
++                               Uref,                 &
++                               UrefWithGusts,        &
+                                Tref,     Qref,       &
+                                fresh,    fsalt,      &
+                                fhocn,    fswthru,    &
+@@ -878,6 +884,7 @@ subroutine merge_fluxes (nx_block, ny_block,   &
+           flwoutn , & ! upwd lw emitted heat flx        (W/m**2)
+           evapn   , & ! evaporation                     (kg/m2/s)
+           Urefn   , & ! wind speed reference level  (m/s)
++          UrefWithGustsn, & ! wind speed reference level with gusts (m/s)
+           Trefn   , & ! air tmp reference level         (K)
+           Qrefn   , & ! air sp hum reference level      (kg/kg)
+           freshn  , & ! fresh water flux to ocean       (kg/m2/s)
+@@ -925,6 +932,7 @@ subroutine merge_fluxes (nx_block, ny_block,   &
+           flwout  , & ! upwd lw emitted heat flx        (W/m**2)
+           evap    , & ! evaporation                     (kg/m2/s)
+           Uref    , & ! wind speed reference level      (m/s)
++          UrefWithGusts, & ! wind speed reference level with gusts (m/s)
+           Tref    , & ! air tmp reference level         (K)
+           Qref    , & ! air sp hum reference level      (kg/kg)
+           fresh   , & ! fresh water flux to ocean       (kg/m2/s)
+@@ -991,6 +999,7 @@ subroutine merge_fluxes (nx_block, ny_block,   &
+              + (flwoutn(i,j) - (c1-emissivity)*flw(i,j))*aicen(i,j)
+          evap     (i,j)  = evap    (i,j) + evapn   (i,j)*aicen(i,j)
+          Uref     (i,j)  = Uref    (i,j) + Urefn   (i,j)*aicen(i,j)
++         UrefWithGusts(i,j)  = UrefWithGusts(i,j) + UrefWithGustsn(i,j)*aicen(i,j)
+          Tref     (i,j)  = Tref    (i,j) + Trefn   (i,j)*aicen(i,j)
+          Qref     (i,j)  = Qref    (i,j) + Qrefn   (i,j)*aicen(i,j)
+ 
+@@ -1037,6 +1046,8 @@ subroutine scale_fluxes (nx_block, ny_block, &
+                                fswabs,   flwout,   &
+                                evap,               &
+                                Uref,               &
++                               UrefWithGusts,      &
++                               ugust,              &
+                                Tref,     Qref,     &
+                                fresh,    fsalt,    &
+                                fhocn,    fswthru,  &
+@@ -1078,6 +1089,8 @@ subroutine scale_fluxes (nx_block, ny_block, &
+           flwout  , & ! upwd lw emitted heat flx        (W/m**2)
+           evap    , & ! evaporation                     (kg/m2/s)
+           Uref    , & ! wind speed reference level      (m/s)
++          UrefWithGusts, & ! wind speed reference level with gusts(m/s)
++          ugust   , & ! gustiness wind speed            (m/s)
+           Tref    , & ! air tmp reference level         (K)
+           Qref    , & ! air sp hum reference level      (kg/kg)
+           fresh   , & ! fresh water flux to ocean       (kg/m2/s)
+@@ -1118,6 +1131,7 @@ subroutine scale_fluxes (nx_block, ny_block, &
+             flwout  (i,j) = flwout  (i,j) * ar
+             evap    (i,j) = evap    (i,j) * ar
+             Uref    (i,j) = Uref    (i,j) * ar
++            UrefWithGusts (i,j) = UrefWithGusts(i,j) * ar
+             Tref    (i,j) = Tref    (i,j) * ar
+             Qref    (i,j) = Qref    (i,j) * ar
+             fresh   (i,j) = fresh   (i,j) * ar
+@@ -1139,6 +1153,7 @@ subroutine scale_fluxes (nx_block, ny_block, &
+                ! to make upward longwave over ocean reasonable for history file
+             evap    (i,j) = c0
+             Uref    (i,j) = wind(i,j)
++            UrefWithGusts(i,j) = sqrt(wind(i,j)**2 + ugust(i,j)**2)
+             Tref    (i,j) = Tair(i,j)
+             Qref    (i,j) = Qa  (i,j)
+             fresh   (i,j) = c0
+diff --git a/components/cice/src/source/ice_ocean.F90 b/components/cice/src/source/ice_ocean.F90
+index 141aaf33b6ca..c0eaeb171c3e 100644
+--- a/components/cice/src/source/ice_ocean.F90
++++ b/components/cice/src/source/ice_ocean.F90
+@@ -167,7 +167,8 @@ subroutine ocean_mixed_layer (dt)
+                                       rhoa       (:,:,iblk), &
+                                       strairx_ocn(:,:,iblk), & 
+                                       strairy_ocn(:,:,iblk), & 
+-                                      Uref_ocn   (:,:,iblk), &
++                                      Uref_ocn   (:,:,iblk), &
++                                      UrefWithGusts_ocn(:,:,iblk), &
+                                       Tref_ocn   (:,:,iblk), & 
+                                       Qref_ocn   (:,:,iblk), & 
+                                       delt       (:,:),      &    
+diff --git a/components/eam/src/control/camsrfexch.F90 b/components/eam/src/control/camsrfexch.F90
+index feb42d3a5403..f1e0b4611695 100644
+--- a/components/eam/src/control/camsrfexch.F90
++++ b/components/eam/src/control/camsrfexch.F90
+@@ -104,6 +104,7 @@ module camsrfexch
+      real(r8), allocatable :: tref(:)       ! ref height surface air temp
+      real(r8), allocatable :: qref(:)       ! ref height specific humidity 
+      real(r8), allocatable :: u10(:)        ! 10m wind speed
++     real(r8), allocatable :: u10withgusts(:) ! 10m wind speed with gustiness
+      real(r8), allocatable :: ts(:)         ! merged surface temp 
+      real(r8), allocatable :: sst(:)        ! sea surface temp
+      real(r8), allocatable :: snowhland(:)  ! snow depth (liquid water equivalent) over land
+@@ -219,6 +220,9 @@ subroutine hub2atm_alloc( cam_in )
+        allocate (cam_in(c)%u10(pcols), stat=ierror)
+        if ( ierror /= 0 ) call endrun('HUB2ATM_ALLOC error: allocation error u10')
+ 
++       allocate (cam_in(c)%u10withgusts(pcols), stat=ierror)
++       if ( ierror /= 0 ) call endrun('HUB2ATM_ALLOC error: allocation error u10withgusts')
++
+        allocate (cam_in(c)%ts(pcols), stat=ierror)
+        if ( ierror /= 0 ) call endrun('HUB2ATM_ALLOC error: allocation error ts')
+ 
+@@ -308,6 +312,7 @@ subroutine hub2atm_alloc( cam_in )
+        cam_in(c)%tref     (:) = 0._r8
+        cam_in(c)%qref     (:) = 0._r8
+        cam_in(c)%u10      (:) = 0._r8
++       cam_in(c)%u10withgusts(:) = 0._r8
+        cam_in(c)%ts       (:) = 0._r8
+        cam_in(c)%sst      (:) = 0._r8
+        cam_in(c)%snowhland(:) = 0._r8
+@@ -617,6 +622,7 @@ subroutine hub2atm_deallocate(cam_in)
+           deallocate(cam_in(c)%tref)
+           deallocate(cam_in(c)%qref)
+           deallocate(cam_in(c)%u10)
++          deallocate(cam_in(c)%u10withgusts)
+           deallocate(cam_in(c)%ts)
+           deallocate(cam_in(c)%sst)
+           deallocate(cam_in(c)%snowhland)
+diff --git a/components/eam/src/cpl/atm_import_export.F90 b/components/eam/src/cpl/atm_import_export.F90
+index 3391c2320d8b..6380a6a23f45 100644
+--- a/components/eam/src/cpl/atm_import_export.F90
++++ b/components/eam/src/cpl/atm_import_export.F90
+@@ -98,6 +98,7 @@ subroutine atm_import( x2a, cam_in, restart_init )
+           cam_in(c)%tref(i)      =  x2a(index_x2a_Sx_tref,  ig)  
+           cam_in(c)%qref(i)      =  x2a(index_x2a_Sx_qref,  ig)
+           cam_in(c)%u10(i)       =  x2a(index_x2a_Sx_u10,   ig)
++          cam_in(c)%u10withgusts(i) = x2a(index_x2a_Sx_u10withgusts, ig)
+           cam_in(c)%icefrac(i)   =  x2a(index_x2a_Sf_ifrac, ig)  
+           cam_in(c)%ocnfrac(i)   =  x2a(index_x2a_Sf_ofrac, ig)
+           cam_in(c)%landfrac(i)  =  x2a(index_x2a_Sf_lfrac, ig)
+diff --git a/components/eam/src/cpl/cam_cpl_indices.F90 b/components/eam/src/cpl/cam_cpl_indices.F90
+index 29ebd87e216e..9a4158527329 100644
+--- a/components/eam/src/cpl/cam_cpl_indices.F90
++++ b/components/eam/src/cpl/cam_cpl_indices.F90
+@@ -86,6 +86,7 @@ module cam_cpl_indices
+   integer :: index_x2a_So_ssq          ! surface saturation specific humidity in ocean 
+   integer :: index_x2a_Sl_ddvel        ! dry deposition velocities from land
+   integer :: index_x2a_Sx_u10          ! 10m wind
++  integer :: index_x2a_Sx_u10withgusts ! 10m wind with gusts
+ 
+ contains
+ 
+@@ -122,6 +123,7 @@ subroutine cam_cpl_indices_set( )
+     index_x2a_Sf_lfrac      = mct_avect_indexra(x2a,'Sf_lfrac')
+ 
+     index_x2a_Sx_u10        = mct_avect_indexra(x2a,'Sx_u10')
++    index_x2a_Sx_u10withgusts = mct_avect_indexra(x2a,'Sx_u10withgusts')
+     index_x2a_Faxx_taux     = mct_avect_indexra(x2a,'Faxx_taux')
+     index_x2a_Faxx_tauy     = mct_avect_indexra(x2a,'Faxx_tauy')
+     index_x2a_Faxx_lat      = mct_avect_indexra(x2a,'Faxx_lat')
+diff --git a/components/eam/src/physics/cam/cam_diagnostics.F90 b/components/eam/src/physics/cam/cam_diagnostics.F90
+index 7fe58964b18f..ead4f558f05b 100644
+--- a/components/eam/src/physics/cam/cam_diagnostics.F90
++++ b/components/eam/src/physics/cam/cam_diagnostics.F90
+@@ -649,6 +649,7 @@ subroutine diag_init()
+     standard_name = 'specific_humidity')
+    call addfld ('U10',horiz_only,    'A','m/s','10m wind speed', &
+      standard_name='wind_speed')
++   call addfld ('U10WITHGUSTS',horiz_only,    'A','m/s','10m wind speed with gustiness effects included')
+    call addfld ('RHREFHT',horiz_only,    'A','1','Reference height relative humidity')
+ 
+    call addfld ('LANDFRAC',horiz_only,    'A','1','Fraction of sfc area covered by land')
+@@ -2139,6 +2140,7 @@ subroutine diag_surf (cam_in, cam_out, ps, trefmxav, trefmnav )
+     call outfld('TREFHTMN', cam_in%tref,      pcols, lchnk)
+     call outfld('QREFHT',   cam_in%qref,      pcols, lchnk)
+     call outfld('U10',      cam_in%u10,       pcols, lchnk)
++    call outfld('U10WITHGUSTS', cam_in%u10withgusts, pcols, lchnk)
+ ! 
+ ! Calculate and output reference height RH (RHREFHT)
+ 
+diff --git a/components/elm/src/biogeophys/BareGroundFluxesMod.F90 b/components/elm/src/biogeophys/BareGroundFluxesMod.F90
+index 3802c8399443..15970484bf70 100644
+--- a/components/elm/src/biogeophys/BareGroundFluxesMod.F90
++++ b/components/elm/src/biogeophys/BareGroundFluxesMod.F90
+@@ -82,6 +82,7 @@ subroutine BareGroundFluxes(bounds, num_nolakeurbanp, filter_nolakeurbanp, &
+     real(r8) :: zeta                             ! dimensionless height used in Monin-Obukhov theory
+     real(r8) :: beta                             ! coefficient of convective velocity [-]
+     real(r8) :: wc                               ! convective velocity [m/s]
++    real(r8) :: ugust_total(bounds%begp:bounds%endp) ! gustiness including convective velocity [m/s]
+     real(r8) :: dth(bounds%begp:bounds%endp)     ! diff of virtual temp. between ref. height and surface
+     real(r8) :: dthv                             ! diff of vir. poten. temp. between ref. height and surface
+     real(r8) :: dqh(bounds%begp:bounds%endp)     ! diff of humidity between ref. height and surface
+@@ -234,6 +235,7 @@ subroutine BareGroundFluxes(bounds, num_nolakeurbanp, filter_nolakeurbanp, &
+             ur(p)    = max(1.0_r8,sqrt(forc_u(t)*forc_u(t)+forc_v(t)*forc_v(t)+ugust(t)*ugust(t)))
+          end if
+          tau_diff(p) = 1.e100_r8
++         ugust_total(p) = ugust(t)
+ 
+          dth(p)   = thm(p)-t_grnd(c)
+          dqh(p)   = forc_q(t) - qg(c)
+@@ -269,7 +271,7 @@ subroutine BareGroundFluxes(bounds, num_nolakeurbanp, filter_nolakeurbanp, &
+ 
+          call FrictionVelocity(begp, endp, fn, filterp, &
+               displa(begp:endp), z0mg_patch(begp:endp), z0hg_patch(begp:endp), z0qg_patch(begp:endp), &
+-              obu(begp:endp), iter, ur(begp:endp), um(begp:endp), ustar(begp:endp), &
++              obu(begp:endp), iter, ur(begp:endp), um(begp:endp), ugust_total(begp:endp), ustar(begp:endp), &
+               temp1(begp:endp), temp2(begp:endp), temp12m(begp:endp), temp22m(begp:endp), fm(begp:endp), &
+               frictionvel_vars)
+ 
+@@ -302,6 +304,7 @@ subroutine BareGroundFluxes(bounds, num_nolakeurbanp, filter_nolakeurbanp, &
+             else                                      !unstable
+                zeta = max(-100._r8,min(zeta,-0.01_r8))
+                wc = beta*(-grav*ustar(p)*thvstar*zii(c)/thv(c))**0.333_r8
++               ugust_total(p) = sqrt(ugust(t)**2 + wc**2)
+                um(p) = sqrt(ur(p)*ur(p) + wc*wc)
+             end if
+             obu(p) = zldis(p)/zeta
+diff --git a/components/elm/src/biogeophys/CanopyFluxesMod.F90 b/components/elm/src/biogeophys/CanopyFluxesMod.F90
+index 6fa95faa333f..9d8170dc3594 100755
+--- a/components/elm/src/biogeophys/CanopyFluxesMod.F90
++++ b/components/elm/src/biogeophys/CanopyFluxesMod.F90
+@@ -169,6 +169,7 @@ subroutine CanopyFluxes(bounds,  num_nolakeurbanp, filter_nolakeurbanp, &
+     real(r8) :: zldis(bounds%begp:bounds%endp)       ! reference height "minus" zero displacement height [m]
+     real(r8) :: zeta                                 ! dimensionless height used in Monin-Obukhov theory
+     real(r8) :: wc                                   ! convective velocity [m/s]
++    real(r8) :: ugust_total(bounds%begp:bounds%endp) ! gustiness including convective velocity [m/s]
+     real(r8) :: dth(bounds%begp:bounds%endp)         ! diff of virtual temp. between ref. height and surface
+     real(r8) :: dthv(bounds%begp:bounds%endp)        ! diff of vir. poten. temp. between ref. height and surface
+     real(r8) :: dqh(bounds%begp:bounds%endp)         ! diff of humidity between ref. height and surface
+@@ -714,6 +715,7 @@ subroutine CanopyFluxes(bounds,  num_nolakeurbanp, filter_nolakeurbanp, &
+             ur(p) = max(1.0_r8,sqrt(forc_u(t)*forc_u(t)+forc_v(t)*forc_v(t)+ugust(t)*ugust(t)))
+          end if
+          tau_diff(p) = 1.e100_r8
++         ugust_total(p) = ugust(t)
+ 
+          dth(p) = thm(p)-taf(p)
+          dqh(p) = forc_q(t)-qaf(p)
+@@ -764,7 +766,7 @@ subroutine CanopyFluxes(bounds,  num_nolakeurbanp, filter_nolakeurbanp, &
+          ! profiles of the surface boundary layer
+          call FrictionVelocity (begp, endp, fn, filterp, &
+               displa(begp:endp), z0mv(begp:endp), z0hv(begp:endp), z0qv(begp:endp), &
+-              obu(begp:endp), itlef, ur(begp:endp), um(begp:endp), ustar(begp:endp), &
++              obu(begp:endp), itlef, ur(begp:endp), um(begp:endp), ugust_total(begp:endp), ustar(begp:endp), &
+               temp1(begp:endp), temp2(begp:endp), temp12m(begp:endp), temp22m(begp:endp), fm(begp:endp), &
+               frictionvel_vars)
+ 
+@@ -1124,6 +1126,7 @@ subroutine CanopyFluxes(bounds,  num_nolakeurbanp, filter_nolakeurbanp, &
+             else                     !unstable
+                zeta = max(-100._r8,min(zeta,-0.01_r8))
+                wc = beta*(-grav*ustar(p)*thvstar*zii/thv(c))**0.333_r8
++               ugust_total(p) = sqrt(ugust(t)**2 + wc**2)
+                um(p) = sqrt(ur(p)*ur(p)+wc*wc)
+             end if
+             obu(p) = zldis(p)/zeta
+diff --git a/components/elm/src/biogeophys/FrictionVelocityMod.F90 b/components/elm/src/biogeophys/FrictionVelocityMod.F90
+index c857eae54c89..0da751c34cda 100644
+--- a/components/elm/src/biogeophys/FrictionVelocityMod.F90
++++ b/components/elm/src/biogeophys/FrictionVelocityMod.F90
+@@ -36,7 +36,7 @@ module FrictionVelocityMod
+   !------------------------------------------------------------------------------
+   subroutine FrictionVelocity(lbn, ubn, fn, filtern, &
+        displa, z0m, z0h, z0q, &
+-       obu, iter, ur, um, ustar, &
++       obu, iter, ur, um, ugust, ustar, &
+        temp1, temp2, temp12m, temp22m, fm,frictionvel_vars,landunit_index)
+     !$acc routine seq
+     ! !DESCRIPTION:
+@@ -65,6 +65,7 @@ subroutine FrictionVelocity(lbn, ubn, fn, filtern, &
+     integer  , intent(in)    :: iter                     ! iteration number
+     real(r8) , intent(in)    :: ur      ( lbn: )         ! wind speed at reference height [m/s] [lbn:ubn]
+     real(r8) , intent(in)    :: um      ( lbn: )         ! wind speed including the stablity effect [m/s] [lbn:ubn]
++    real(r8) , intent(in)    :: ugust   ( lbn: )         ! Gustiness wind speed [m/s] [lbn:ubn]
+     real(r8) , intent(out)   :: ustar   ( lbn: )         ! friction velocity [m/s] [lbn:ubn]
+     real(r8) , intent(out)   :: temp1   ( lbn: )         ! relation for potential temperature profile [lbn:ubn]
+     real(r8) , intent(out)   :: temp12m ( lbn: )         ! relation for potential temperature profile applied at 2-m [lbn:ubn]
+@@ -97,6 +98,7 @@ subroutine FrictionVelocity(lbn, ubn, fn, filtern, &
+          vds              => frictionvel_vars%vds_patch        , & ! Output: [real(r8) (:) ] dry deposition velocity term (m/s) (for SO4 NH4NO3)
+          u10              => frictionvel_vars%u10_patch        , & ! Output: [real(r8) (:) ] 10-m wind (m/s) (for dust model)
+          u10_elm          => frictionvel_vars%u10_elm_patch    , & ! Output: [real(r8) (:) ] 10-m wind (m/s)
++         u10_with_gusts_elm=>frictionvel_vars%u10_with_gusts_elm_patch, & ! Output: [real(r8) (:) ] 10-m wind with gusts(m/s)
+          va               => frictionvel_vars%va_patch         , & ! Output: [real(r8) (:) ] atmospheric wind speed plus convective velocity (m/s)
+          fv               => frictionvel_vars%fv_patch           & ! Output: [real(r8) (:) ] friction velocity (m/s) (for dust model)
+          )
+@@ -166,52 +168,56 @@ subroutine FrictionVelocity(lbn, ubn, fn, filtern, &
+           if (present(landunit_index)) then
+              do pp = pfti,pftf
+                 if (zldis-z0m(n) <= 10._r8) then
+-                   u10_elm(pp) = um(n)
++                   u10_with_gusts_elm(pp) = um(n)
+                 else
+                    if (zeta < -zetam) then
+-                      u10_elm(pp) = um(n) - ( ustar(n)/vkc*(log(-zetam*obu(n)/(10._r8+z0m(n)))      &
++                      u10_with_gusts_elm(pp) = um(n) - ( ustar(n)/vkc*(log(-zetam*obu(n)/(10._r8+z0m(n))) &
+                            - StabilityFunc1(-zetam)                              &
+                            + StabilityFunc1((10._r8+z0m(n))/obu(n))              &
+                            + 1.14_r8*((-zeta)**0.333_r8-(zetam)**0.333_r8)) )
+                    else if (zeta < 0._r8) then
+-                      u10_elm(pp) = um(n) - ( ustar(n)/vkc*(log(zldis/(10._r8+z0m(n)))           &
++                      u10_with_gusts_elm(pp) = um(n) - ( ustar(n)/vkc*(log(zldis/(10._r8+z0m(n))) &
+                            - StabilityFunc1(zeta)                             &
+                            + StabilityFunc1((10._r8+z0m(n))/obu(n))) )
+                    else if (zeta <=  1._r8) then
+-                      u10_elm(pp) = um(n) - ( ustar(n)/vkc*(log(zldis/(10._r8+z0m(n)))           &
++                      u10_with_gusts_elm(pp) = um(n) - ( ustar(n)/vkc*(log(zldis/(10._r8+z0m(n))) &
+                            + 5._r8*zeta - 5._r8*(10._r8+z0m(n))/obu(n)) )
+                    else
+-                      u10_elm(pp) = um(n) - ( ustar(n)/vkc*(log(obu(n)/(10._r8+z0m(n)))             &
++                      u10_with_gusts_elm(pp) = um(n) - ( ustar(n)/vkc*(log(obu(n)/(10._r8+z0m(n))) &
+                            + 5._r8 - 5._r8*(10._r8+z0m(n))/obu(n)                &
+                            + (5._r8*log(zeta)+zeta-1._r8)) )
+ 
+                    end if
+                 end if
+                 va(pp) = um(n)
++                ! Estimate u10 with effects of gustiness removed.
++                u10_elm(pp) = u10_with_gusts_elm(pp) * sqrt(max(0., um(n)**2 - ugust(n)**2)) / um(n)
+              end do
+           else
+              if (zldis-z0m(n) <= 10._r8) then
+-                u10_elm(n) = um(n)
++                u10_with_gusts_elm(n) = um(n)
+              else
+                 if (zeta < -zetam) then
+-                   u10_elm(n) = um(n) - ( ustar(n)/vkc*(log(-zetam*obu(n)/(10._r8+z0m(n)))         &
++                   u10_with_gusts_elm(n) = um(n) - ( ustar(n)/vkc*(log(-zetam*obu(n)/(10._r8+z0m(n))) &
+                         - StabilityFunc1(-zetam)                                 &
+                         + StabilityFunc1((10._r8+z0m(n))/obu(n))                 &
+                         + 1.14_r8*((-zeta)**0.333_r8-(zetam)**0.333_r8)) )
+                 else if (zeta < 0._r8) then
+-                   u10_elm(n) = um(n) - ( ustar(n)/vkc*(log(zldis/(10._r8+z0m(n)))              &
++                   u10_with_gusts_elm(n) = um(n) - ( ustar(n)/vkc*(log(zldis/(10._r8+z0m(n))) &
+                         - StabilityFunc1(zeta)                                &
+                         + StabilityFunc1((10._r8+z0m(n))/obu(n))) )
+                 else if (zeta <=  1._r8) then
+-                   u10_elm(n) = um(n) - ( ustar(n)/vkc*(log(zldis/(10._r8+z0m(n)))              &
++                   u10_with_gusts_elm(n) = um(n) - ( ustar(n)/vkc*(log(zldis/(10._r8+z0m(n))) &
+                         + 5._r8*zeta - 5._r8*(10._r8+z0m(n))/obu(n)) )
+                 else
+-                   u10_elm(n) = um(n) - ( ustar(n)/vkc*(log(obu(n)/(10._r8+z0m(n)))    &
++                   u10_with_gusts_elm(n) = um(n) - ( ustar(n)/vkc*(log(obu(n)/(10._r8+z0m(n))) &
+                         + 5._r8 - 5._r8*(10._r8+z0m(n))/obu(n)                   &
+                         + (5._r8*log(zeta)+zeta-1._r8)) )
+                 end if
+              end if
+              va(n) = um(n)
++             ! Estimate u10 with effects of gustiness removed.
++             u10_elm(n) = u10_with_gusts_elm(n) * sqrt(max(0., um(n)**2 - ugust(n)**2)) / um(n)
+           end if
+ 
+           !===================!
+diff --git a/components/elm/src/biogeophys/FrictionVelocityType.F90 b/components/elm/src/biogeophys/FrictionVelocityType.F90
+index ceb2244eae17..9ee8d586cd94 100644
+--- a/components/elm/src/biogeophys/FrictionVelocityType.F90
++++ b/components/elm/src/biogeophys/FrictionVelocityType.F90
+@@ -28,6 +28,7 @@ module FrictionVelocityType
+      real(r8), pointer :: forc_hgt_q_patch (:)   ! patch specific humidity forcing height (10m+z0m+d) (m)
+      real(r8), pointer :: u10_patch        (:)   ! patch 10-m wind (m/s) (for dust model)
+      real(r8), pointer :: u10_elm_patch    (:)   ! patch 10-m wind (m/s) (for elm_map2gcell)
++     real(r8), pointer :: u10_with_gusts_elm_patch(:)! patch 10-m wind with gusts (m/s) (for elm_map2gcell)
+      real(r8), pointer :: va_patch         (:)   ! patch atmospheric wind speed plus convective velocity (m/s)
+      real(r8), pointer :: vds_patch        (:)   ! patch deposition velocity term (m/s) (for dry dep SO4, NH4NO3)
+      real(r8), pointer :: fv_patch         (:)   ! patch friction velocity (m/s) (for dust model)
+@@ -91,6 +92,7 @@ subroutine InitAllocate(this, bounds)
+     allocate(this%forc_hgt_q_patch (begp:endp)) ; this%forc_hgt_q_patch (:)   = spval
+     allocate(this%u10_patch        (begp:endp)) ; this%u10_patch        (:)   = spval
+     allocate(this%u10_elm_patch    (begp:endp)) ; this%u10_elm_patch    (:)   = spval
++    allocate(this%u10_with_gusts_elm_patch(begp:endp));this%u10_with_gusts_elm_patch(:)=spval
+     allocate(this%va_patch         (begp:endp)) ; this%va_patch         (:)   = spval
+     allocate(this%vds_patch        (begp:endp)) ; this%vds_patch        (:)   = spval
+     allocate(this%fv_patch         (begp:endp)) ; this%fv_patch         (:)   = spval
+@@ -153,6 +155,11 @@ subroutine InitHistory(this, bounds)
+          avgflag='A', long_name='10-m wind', &
+          ptr_patch=this%u10_elm_patch)
+ 
++    this%u10_with_gusts_elm_patch(begp:endp) = spval
++    call hist_addfld1d (fname='U10WITHGUSTS', units='m/s', &
++         avgflag='A', long_name='10-m wind with gustiness enhancement included', &
++         ptr_patch=this%u10_with_gusts_elm_patch)
++
+     if (use_cn) then
+        this%u10_patch(begp:endp) = spval
+        call hist_addfld1d (fname='U10_DUST', units='m/s', &
+diff --git a/components/elm/src/biogeophys/LakeFluxesMod.F90 b/components/elm/src/biogeophys/LakeFluxesMod.F90
+index 1f0b1d6ee168..1cf932308b44 100644
+--- a/components/elm/src/biogeophys/LakeFluxesMod.F90
++++ b/components/elm/src/biogeophys/LakeFluxesMod.F90
+@@ -123,6 +123,7 @@ subroutine LakeFluxes(bounds, num_lakec, filter_lakec, num_lakep, filter_lakep,
+     real(r8) :: ur(bounds%begp:bounds%endp)        ! wind speed at reference height [m/s]
+     real(r8) :: ustar(bounds%begp:bounds%endp)     ! friction velocity [m/s]
+     real(r8) :: wc                                 ! convective velocity [m/s]
++    real(r8) :: ugust_total(bounds%begp:bounds%endp) ! gustiness including convective velocity [m/s]
+     real(r8) :: zeta                               ! dimensionless height used in Monin-Obukhov theory
+     real(r8) :: zldis(bounds%begp:bounds%endp)     ! reference height "minus" zero displacement height [m]
+     real(r8) :: displa(bounds%begp:bounds%endp)    ! displacement (always zero) [m]
+@@ -361,6 +362,7 @@ subroutine LakeFluxes(bounds, num_lakec, filter_lakec, num_lakep, filter_lakep,
+             ur(p) = max(1.0_r8,sqrt(forc_u(t)*forc_u(t)+forc_v(t)*forc_v(t)+ugust(t)*ugust(t)))
+          end if
+          tau_diff(p) = 1.e100_r8
++         ugust_total(p) = ugust(t)
+ 
+          dth(p)   = thm(p)-t_grnd(c)
+          dqh(p)   = forc_q(t)-qsatg(c)
+@@ -390,7 +392,8 @@ subroutine LakeFluxes(bounds, num_lakec, filter_lakec, num_lakep, filter_lakep,
+ 
+          call FrictionVelocity(begp, endp, fncopy, fpcopy, &
+               displa(begp:endp), z0mg(begp:endp), z0hg(begp:endp), z0qg(begp:endp), &
+-              obu(begp:endp), iter, ur(begp:endp), um(begp:endp), ustar(begp:endp), &
++              obu(begp:endp), iter, ur(begp:endp), um(begp:endp), ugust_total(begp:endp), &
++              ustar(begp:endp), &
+               temp1(begp:endp), temp2(begp:endp), temp12m(begp:endp), temp22m(begp:endp), &
+               fm(begp:endp), frictionvel_vars)
+ 
+@@ -493,6 +496,7 @@ subroutine LakeFluxes(bounds, num_lakec, filter_lakec, num_lakep, filter_lakep,
+             else                     !unstable
+                zeta = max(-100._r8,min(zeta,-0.01_r8))
+                wc = beta1*(-grav*ustar(p)*thvstar*zii/thv(c))**0.333_r8
++               ugust_total(p) = sqrt(ugust(t)**2 + wc**2)
+                um(p) = sqrt(ur(p)*ur(p)+wc*wc)
+             end if
+             obu(p) = zldis(p)/zeta
+diff --git a/components/elm/src/biogeophys/UrbanFluxesMod.F90 b/components/elm/src/biogeophys/UrbanFluxesMod.F90
+index 3c37d9dd291e..65b8abd9f2ef 100644
+--- a/components/elm/src/biogeophys/UrbanFluxesMod.F90
++++ b/components/elm/src/biogeophys/UrbanFluxesMod.F90
+@@ -162,6 +162,7 @@ subroutine UrbanFluxes (bounds, num_nourbanl, filter_nourbanl,
+     real(r8) :: t_roof_innerl(bounds%begl:bounds%endl)               ! temperature of inner layer of roof (K)
+     real(r8) :: lngth_roof                                           ! length of roof (m)
+     real(r8) :: wc                                                   ! convective velocity (m/s)
++    real(r8) :: ugust_total(bounds%begl:bounds%endl)                 ! gustiness including convective velocity [m/s]
+     real(r8) :: zeta                                                 ! dimensionless height used in Monin-Obukhov theory
+     real(r8) :: eflx_sh_grnd_scale(bounds%begp:bounds%endp)          ! scaled sensible heat flux from ground (W/m**2) [+ to atm]
+     real(r8) :: qflx_evap_soi_scale(bounds%begp:bounds%endp)         ! scaled soil evaporation (mm H2O/s) (+ = to atm)
+@@ -345,6 +346,7 @@ subroutine UrbanFluxes (bounds, num_nourbanl, filter_nourbanl,
+             ur(l) = max(1.0_r8,sqrt(forc_u(t)*forc_u(t)+forc_v(t)*forc_v(t)+ugust(t)*ugust(t)))
+          end if
+          tau_diff(l) = 1.e100_r8
++         ugust_total(l) = ugust(t)
+ 
+       end do
+ 
+@@ -411,7 +413,7 @@ subroutine UrbanFluxes (bounds, num_nourbanl, filter_nourbanl,
+             call FrictionVelocity(begl, endl, &
+                  num_urbanl, filter_urbanl, &
+                  z_d_town(begl:endl), z_0_town(begl:endl), z_0_town(begl:endl), z_0_town(begl:endl), &
+-                 obu(begl:endl), iter, ur(begl:endl), um(begl:endl), ustar(begl:endl), &
++                 obu(begl:endl), iter, ur(begl:endl), um(begl:endl), ugust_total(begl:endl), ustar(begl:endl), &
+                  temp1(begl:endl), temp2(begl:endl), temp12m(begl:endl), temp22m(begl:endl), fm(begl:endl), &
+                  frictionvel_vars, landunit_index=.true.)
+          end if
+@@ -712,6 +714,7 @@ subroutine UrbanFluxes (bounds, num_nourbanl, filter_nourbanl,
+             else                                      !unstable
+                zeta = max(-100._r8,min(zeta,-0.01_r8))
+                wc = beta(l)*(-grav*ustar(l)*thvstar*zii(l)/thv_g(l))**0.333_r8
++               ugust_total(l) = sqrt(ugust(t)**2 + wc**2)
+                um(l) = sqrt(ur(l)*ur(l) + wc*wc)
+             end if
+ 
+diff --git a/components/elm/src/cpl/elm_cpl_indices.F90 b/components/elm/src/cpl/elm_cpl_indices.F90
+index ee2938a0913f..c7408cd99ff6 100644
+--- a/components/elm/src/cpl/elm_cpl_indices.F90
++++ b/components/elm/src/cpl/elm_cpl_indices.F90
+@@ -43,6 +43,7 @@ module elm_cpl_indices
+   integer, public ::index_l2x_Sl_anidf        ! albedo: diffuse, near-ir
+   integer, public ::index_l2x_Sl_snowh        ! snow height
+   integer, public ::index_l2x_Sl_u10          ! 10m wind
++  integer, public ::index_l2x_Sl_u10withgusts ! 10m wind with gustiness included
+   integer, public ::index_l2x_Sl_ddvel        ! dry deposition velocities (optional)
+   integer, public ::index_l2x_Sl_fv           ! friction velocity  
+   integer, public ::index_l2x_Sl_ram1         ! aerodynamical resistance
+@@ -201,6 +202,7 @@ subroutine elm_cpl_indices_set( )
+     index_l2x_Sl_tref       = mct_avect_indexra(l2x,'Sl_tref')
+     index_l2x_Sl_qref       = mct_avect_indexra(l2x,'Sl_qref')
+     index_l2x_Sl_u10        = mct_avect_indexra(l2x,'Sl_u10')
++    index_l2x_Sl_u10withgusts = mct_avect_indexra(l2x,'Sl_u10withgusts')
+     index_l2x_Sl_ram1       = mct_avect_indexra(l2x,'Sl_ram1')
+     index_l2x_Sl_fv         = mct_avect_indexra(l2x,'Sl_fv')
+     index_l2x_Sl_soilw      = mct_avect_indexra(l2x,'Sl_soilw',perrwith='quiet')
+diff --git a/components/elm/src/cpl/lnd_import_export.F90 b/components/elm/src/cpl/lnd_import_export.F90
+index 71d9ee986797..a85dc724f80d 100644
+--- a/components/elm/src/cpl/lnd_import_export.F90
++++ b/components/elm/src/cpl/lnd_import_export.F90
+@@ -1391,6 +1391,7 @@ subroutine lnd_export( bounds, lnd2atm_vars, lnd2glc_vars, l2x)
+        l2x(index_l2x_Sl_tref,i)     =  lnd2atm_vars%t_ref2m_grc(g)
+        l2x(index_l2x_Sl_qref,i)     =  lnd2atm_vars%q_ref2m_grc(g)
+        l2x(index_l2x_Sl_u10,i)      =  lnd2atm_vars%u_ref10m_grc(g)
++       l2x(index_l2x_Sl_u10withgusts,i)=lnd2atm_vars%u_ref10m_with_gusts_grc(g)
+        l2x(index_l2x_Fall_taux,i)   = -lnd2atm_vars%taux_grc(g)
+        l2x(index_l2x_Fall_tauy,i)   = -lnd2atm_vars%tauy_grc(g)
+        l2x(index_l2x_Fall_lat,i)    = -lnd2atm_vars%eflx_lh_tot_grc(g)
+diff --git a/components/elm/src/main/lnd2atmMod.F90 b/components/elm/src/main/lnd2atmMod.F90
+index 3e7c283a0434..c789c775f4ba 100644
+--- a/components/elm/src/main/lnd2atmMod.F90
++++ b/components/elm/src/main/lnd2atmMod.F90
+@@ -181,7 +181,9 @@ subroutine lnd2atm(bounds, &
+       q_ref2m     => veg_ws%q_ref2m , &
+       q_ref2m_grc => lnd2atm_vars%q_ref2m_grc      , &
+       u10_elm_patch => frictionvel_vars%u10_elm_patch , &
++      u10_with_gusts_elm_patch => frictionvel_vars%u10_with_gusts_elm_patch, &
+       u_ref10m_grc => lnd2atm_vars%u_ref10m_grc      , &
++      u_ref10m_with_gusts_grc => lnd2atm_vars%u_ref10m_with_gusts_grc      , &
+       taux     => veg_ef%taux , &
+       taux_grc => lnd2atm_vars%taux_grc      , &
+       tauy     => veg_ef%tauy , &
+@@ -258,6 +260,11 @@ subroutine lnd2atm(bounds, &
+          u_ref10m_grc (bounds%begg:bounds%endg)     , &
+          p2c_scale_type=unity, c2l_scale_type= unity, l2g_scale_type=unity)
+ 
++    call p2g(bounds, &
++         u10_with_gusts_elm_patch(bounds%begp:bounds%endp) , &
++         u_ref10m_with_gusts_grc (bounds%begg:bounds%endg)     , &
++         p2c_scale_type=unity, c2l_scale_type= unity, l2g_scale_type=unity)
++
+     call p2g(bounds, &
+          taux     (bounds%begp:bounds%endp), &
+          taux_grc (bounds%begg:bounds%endg)     , &
+diff --git a/components/elm/src/main/lnd2atmType.F90 b/components/elm/src/main/lnd2atmType.F90
+index 585819368464..d6cec17131d4 100644
+--- a/components/elm/src/main/lnd2atmType.F90
++++ b/components/elm/src/main/lnd2atmType.F90
+@@ -30,6 +30,7 @@ module lnd2atmType
+      real(r8), pointer :: t_ref2m_grc        (:)   => null() ! 2m surface air temperature (Kelvin)
+      real(r8), pointer :: q_ref2m_grc        (:)   => null() ! 2m surface specific humidity (kg/kg)
+      real(r8), pointer :: u_ref10m_grc       (:)   => null() ! 10m surface wind speed (m/sec)
++     real(r8), pointer :: u_ref10m_with_gusts_grc(:)=> null()! 10m surface wind speed with gusts included (m/sec)
+      real(r8), pointer :: h2osno_grc         (:)   => null() ! snow water (mm H2O)
+      real(r8), pointer :: h2osoi_vol_grc     (:,:) => null() ! volumetric soil water (0~watsat, m3/m3, nlevgrnd) (for dust model)
+      real(r8), pointer :: albd_grc           (:,:) => null() ! (numrad) surface albedo (direct)
+@@ -118,6 +119,7 @@ subroutine InitAllocate(this, bounds)
+     allocate(this%t_ref2m_grc          (begg:endg))            ; this%t_ref2m_grc          (:) =ival
+     allocate(this%q_ref2m_grc          (begg:endg))            ; this%q_ref2m_grc          (:) =ival
+     allocate(this%u_ref10m_grc         (begg:endg))            ; this%u_ref10m_grc         (:) =ival
++    allocate(this%u_ref10m_with_gusts_grc(begg:endg))          ; this%u_ref10m_with_gusts_grc(:)=ival
+     allocate(this%h2osno_grc           (begg:endg))            ; this%h2osno_grc           (:) =ival
+     allocate(this%h2osoi_vol_grc       (begg:endg,1:nlevgrnd)) ; this%h2osoi_vol_grc     (:,:) =ival
+     allocate(this%albd_grc             (begg:endg,1:numrad))   ; this%albd_grc           (:,:) =ival
+diff --git a/components/mpas-seaice/driver/ice_comp_mct.F b/components/mpas-seaice/driver/ice_comp_mct.F
+index 1df29438009c..931057f1c5f6 100644
+--- a/components/mpas-seaice/driver/ice_comp_mct.F
++++ b/components/mpas-seaice/driver/ice_comp_mct.F
+@@ -2362,6 +2362,7 @@ subroutine ice_export_mct(i2x_i, errorCode)   !{{{
+       albedoVisibleDiffuseCell,    &
+       albedoIRDiffuseCell,         &
+       atmosReferenceSpeed10m,      &
++      atmosSpeed10mWithGusts,      &
+       atmosReferenceTemperature2m, &
+       atmosReferenceHumidity2m,    &
+       latentHeatFlux,              &
+@@ -2446,6 +2447,7 @@ subroutine ice_export_mct(i2x_i, errorCode)   !{{{
+       call MPAS_pool_get_array(shortwave, 'absorbedShortwaveFlux', absorbedShortwaveFlux)
+ 
+       call MPAS_pool_get_array(atmosCoupling, 'atmosReferenceSpeed10m', atmosReferenceSpeed10m)
++      call MPAS_pool_get_array(atmosCoupling, 'atmosSpeed10mWithGusts', atmosSpeed10mWithGusts)
+       call MPAS_pool_get_array(atmosCoupling, 'atmosReferenceTemperature2m', atmosReferenceTemperature2m)
+       call MPAS_pool_get_array(atmosCoupling, 'atmosReferenceHumidity2m', atmosReferenceHumidity2m)
+ 
+@@ -2553,6 +2555,7 @@ subroutine ice_export_mct(i2x_i, errorCode)   !{{{
+             i2x_i % rAttr(index_i2x_Si_t     ,n)  = Tsrf
+             i2x_i % rAttr(index_i2x_Si_bpress,n)  = basalPressure
+             i2x_i % rAttr(index_i2x_Si_u10   ,n)  = atmosReferenceSpeed10m(i)
++            i2x_i % rAttr(index_i2x_Si_u10withgusts,n) = atmosSpeed10mWithGusts(i)
+             i2x_i % rAttr(index_i2x_Si_tref  ,n)  = atmosReferenceTemperature2m(i)
+             i2x_i % rAttr(index_i2x_Si_qref  ,n)  = atmosReferenceHumidity2m(i)
+             i2x_i % rAttr(index_i2x_Si_snowh ,n)  = snowVolumeCell(i) / ailohi
+diff --git a/components/mpas-seaice/driver/mpassi_cpl_indices.F b/components/mpas-seaice/driver/mpassi_cpl_indices.F
+index 4335827e15e1..c12640636201 100644
+--- a/components/mpas-seaice/driver/mpassi_cpl_indices.F
++++ b/components/mpas-seaice/driver/mpassi_cpl_indices.F
+@@ -22,6 +22,7 @@ module mpassi_cpl_indices
+   integer :: index_i2x_Si_anidr        ! albedo: visible, diffuse        
+   integer :: index_i2x_Si_anidf        ! albedo: near ir, diffuse        
+   integer :: index_i2x_Si_u10          ! 10m wind
++  integer :: index_i2x_Si_u10withgusts ! 10m wind root-mean-square magnitude with gustiness
+   integer :: index_i2x_Faii_lwup       ! upward longwave heat flux  
+   integer :: index_i2x_Faii_lat        ! latent          heat flux  
+   integer :: index_i2x_Faii_sen        ! sensible        heat flux      
+@@ -155,6 +156,7 @@ subroutine mpassi_cpl_indices_set( )
+     index_i2x_Si_anidf      = mct_avect_indexra(i2x,'Si_anidf')
+     index_i2x_Si_snowh      = mct_avect_indexra(i2x,'Si_snowh')
+     index_i2x_Si_u10        = mct_avect_indexra(i2x,'Si_u10')
++    index_i2x_Si_u10withgusts = mct_avect_indexra(i2x,'Si_u10withgusts')
+     index_i2x_Faii_taux     = mct_avect_indexra(i2x,'Faii_taux')
+     index_i2x_Faii_tauy     = mct_avect_indexra(i2x,'Faii_tauy')
+     index_i2x_Faii_lat      = mct_avect_indexra(i2x,'Faii_lat')
+diff --git a/components/mpas-seaice/src/Registry.xml b/components/mpas-seaice/src/Registry.xml
+index 6b05a554087f..e324e614cde2 100644
+--- a/components/mpas-seaice/src/Registry.xml
++++ b/components/mpas-seaice/src/Registry.xml
+@@ -3756,6 +3756,11 @@
+ 		     dimensions="nCells Time"
+ 		     units="m s-1"
+ 		/>
++		<var name="atmosSpeed10mWithGusts"
++		     type="real"
++		     dimensions="nCells Time"
++		     units="m s-1"
++		/>
+ 		<var name="atmosReferenceTemperature2m"
+ 		     type="real"
+ 		     dimensions="nCells Time"
+diff --git a/components/mpas-seaice/src/column/ice_atmo.F90 b/components/mpas-seaice/src/column/ice_atmo.F90
+index 60c3fd98e602..2fcb04a0e9f6 100644
+--- a/components/mpas-seaice/src/column/ice_atmo.F90
++++ b/components/mpas-seaice/src/column/ice_atmo.F90
+@@ -61,7 +61,8 @@ subroutine atmo_boundary_layer (sfctype,            &
+                                       Cdn_atm,            &
+                                       Cdn_atm_ratio_n,    &
+                                       uvel,     vvel,     &
+-                                      Uref)
++                                      Uref,               &
++                                      UrefWithGusts)
+ 
+       character (len=3), intent(in) :: &
+          sfctype      ! ice or ocean
+@@ -109,7 +110,8 @@ subroutine atmo_boundary_layer (sfctype,            &
+          vvel         ! y-direction ice speed (m/s)
+ 
+       real (kind=dbl_kind), intent(out) :: &
+-         Uref         ! reference height wind speed (m/s)
++         Uref     , & ! reference height wind speed (m/s)
++         UrefWithGusts! reference height wind speed with gusts included (m/s)
+ 
+       ! local variables
+ 
+@@ -186,6 +188,7 @@ subroutine atmo_boundary_layer (sfctype,            &
+       Tref = c0
+       Qref = c0
+       Uref = c0
++      UrefWithGusts = c0
+       delt = c0
+       delq = c0
+       shcoef = c0
+@@ -372,8 +375,13 @@ subroutine atmo_boundary_layer (sfctype,            &
+ 
+       if (highfreq .and. sfctype(1:3)=='ice') then
+          Uref = sqrt((uatm-uvel)**2 + (vatm-vvel)**2) * rd / rdn
++         UrefWithGusts = sqrt((uatm-uvel)**2 + (vatm-vvel)**2 + ugust**2) * rd / rdn
+       else
+-         Uref = vmag * rd / rdn
++         Uref = sqrt(uatm**2 + vatm**2) * rd / rdn
++         ! Note that the below is consistent with earlier code, but unlike the
++         ! other Uref calculations, the use of vmag here means that
++         ! UrefWithGusts is subject to the umin limiter.
++         UrefWithGusts = vmag * rd /rdn
+       endif
+ 
+       end subroutine atmo_boundary_layer
+diff --git a/components/mpas-seaice/src/column/ice_colpkg.F90 b/components/mpas-seaice/src/column/ice_colpkg.F90
+index c28684075842..d779d4d50784 100644
+--- a/components/mpas-seaice/src/column/ice_colpkg.F90
++++ b/components/mpas-seaice/src/column/ice_colpkg.F90
+@@ -1823,6 +1823,7 @@ subroutine colpkg_step_therm1(dt, ncat, nilyr, nslyr, n_aero, &
+                                     Qa          , rhoa        , &
+                                     Tair        , Tref        , &
+                                     Qref        , Uref        , &
++                                    UrefWithGusts,              &
+                                     Cdn_atm_ratio,              &
+                                     Cdn_ocn     , Cdn_ocn_skin, &
+                                     Cdn_ocn_floe, Cdn_ocn_keel, &
+@@ -1946,6 +1947,7 @@ subroutine colpkg_step_therm1(dt, ncat, nilyr, nslyr, n_aero, &
+          Tref        , & ! 2m atm reference temperature (K)
+          Qref        , & ! 2m atm reference spec humidity (kg/kg)
+          Uref        , & ! 10m atm reference wind speed (m/s)
++         UrefWithGusts, & ! 10m atm reference wind speed with gustiness (m/s)
+          Cdn_atm     , & ! atm drag coefficient
+          Cdn_ocn     , & ! ocn drag coefficient
+          hfreebd     , & ! freeboard (m)
+@@ -2061,6 +2063,7 @@ subroutine colpkg_step_therm1(dt, ncat, nilyr, nslyr, n_aero, &
+          Cdn_atm_ratio_n, & ! drag coefficient ratio
+          Trefn       , & ! air tmp reference level                (K)
+          Urefn       , & ! air speed reference level            (m/s)
++         UrefWithGustsn, & ! air speed reference level with gusts (m/s)
+          Qrefn       , & ! air sp hum reference level         (kg/kg)
+          Tbot        , & ! ice bottom surface temperature (deg C)
+          shcoef      , & ! transfer coefficient for sensible heat
+@@ -2145,6 +2148,7 @@ subroutine colpkg_step_therm1(dt, ncat, nilyr, nslyr, n_aero, &
+          Trefn  = c0
+          Qrefn  = c0
+          Urefn  = c0
++         UrefWithGustsn  = c0
+          lhcoef = c0
+          shcoef = c0
+          worka  = c0
+@@ -2176,7 +2180,8 @@ subroutine colpkg_step_therm1(dt, ncat, nilyr, nslyr, n_aero, &
+                                         Cdn_atm,                 &
+                                         Cdn_atm_ratio_n,         &
+                                         uvel,     vvel,          &
+-                                        Uref=Urefn)
++                                        Uref=Urefn,              &
++                                        UrefWithGusts=UrefWithGustsn)
+ 
+             endif   ! calc_Tsfc or calc_strair
+ 
+@@ -2398,7 +2403,9 @@ subroutine colpkg_step_therm1(dt, ncat, nilyr, nslyr, n_aero, &
+                                meltt,      melts,        &
+                                meltb,      congel,       &
+                                snoice,     meltsliq,     &
+-                               Uref,       Urefn)
++                               Uref,       Urefn,        &
++                               UrefWithGusts,            &
++                               UrefWithGustsn            )
+ 
+       enddo                  ! ncat
+ 
+@@ -3641,7 +3648,7 @@ subroutine colpkg_atm_boundary(sfctype,                    &
+                                      Cdn_atm,                    &
+                                      Cdn_atm_ratio_n,            &
+                                      uvel,        vvel,          &
+-                                     Uref)
++                                     Uref,        UrefWithGusts  )
+ 
+       use ice_atmo, only: atmo_boundary_const, atmo_boundary_layer
+       use ice_constants_colpkg, only: c0
+@@ -3682,14 +3689,16 @@ subroutine colpkg_atm_boundary(sfctype,                    &
+          vvel         ! y-direction ice speed (m/s)
+ 
+       real (kind=dbl_kind), optional, intent(out) :: &
+-         Uref         ! reference height wind speed (m/s)
++         Uref     , & ! reference height wind speed (m/s)
++         UrefWithGusts! reference height wind speed with gusts (m/s)
+ 
+       real (kind=dbl_kind) :: &
+-         worku, workv, workr
++         worku, workv, workr, works
+ 
+       worku = c0
+       workv = c0
+       workr = c0
++      works = c0
+       if (present(uvel)) then
+          worku = uvel
+       endif
+@@ -3723,12 +3732,15 @@ subroutine colpkg_atm_boundary(sfctype,                    &
+                                             Cdn_atm,                 &
+                                             Cdn_atm_ratio_n,         &
+                                             worku,    workv,         &
+-                                            workr)
++                                            workr,    works)
+                endif ! atmbndy
+ 
+       if (present(Uref)) then
+          Uref = workr
+       endif
++      if (present(UrefWithGusts)) then
++         UrefWithGusts = works
++      endif
+ 
+       end subroutine colpkg_atm_boundary
+ 
+diff --git a/components/mpas-seaice/src/column/ice_flux_colpkg.F90 b/components/mpas-seaice/src/column/ice_flux_colpkg.F90
+index 4806fdceccf0..b2d876c9bb17 100644
+--- a/components/mpas-seaice/src/column/ice_flux_colpkg.F90
++++ b/components/mpas-seaice/src/column/ice_flux_colpkg.F90
+@@ -53,7 +53,9 @@ subroutine merge_fluxes (aicen,                &
+                                meltt,    melts,      &
+                                meltb,    congel,     &
+                                snoice,   meltsliq,   &
+-                               Uref,     Urefn       )
++                               Uref,     Urefn,      &
++                               UrefWithGusts,        &
++                               UrefWithGustsn        )
+ 
+       ! single category fluxes
+       real (kind=dbl_kind), intent(in) :: &
+@@ -84,7 +86,8 @@ subroutine merge_fluxes (aicen,                &
+           snoicen     ! snow-ice growth                 (m)
+            
+       real (kind=dbl_kind), optional, intent(in):: &
+-          Urefn       ! air speed reference level       (m/s)
++          Urefn   , & ! air speed reference level       (m/s)
++          UrefWithGustsn ! air speed reference level with gusts (m/s)
+ 
+       ! cumulative fluxes
+       real (kind=dbl_kind), intent(inout) :: &
+@@ -112,7 +115,8 @@ subroutine merge_fluxes (aicen,                &
+           snoice      ! snow-ice growth                 (m)
+ 
+       real (kind=dbl_kind), optional, intent(inout):: &
+-          Uref        ! air speed reference level       (m/s)
++          Uref    , & ! air speed reference level       (m/s)
++          UrefWithGusts ! air speed reference level with gusts (m/s)
+ 
+       !-----------------------------------------------------------------
+       ! Merge fluxes
+@@ -142,6 +146,9 @@ subroutine merge_fluxes (aicen,                &
+       if (present(Urefn) .and. present(Uref)) then
+          Uref = Uref     + Urefn     * aicen
+       endif
++      if (present(UrefWithGustsn) .and. present(UrefWithGusts)) then
++         UrefWithGusts = UrefWithGusts + UrefWithGustsn * aicen
++      endif
+ 
+       fresh     = fresh     + freshn    * aicen
+       fsalt     = fsalt     + fsaltn    * aicen
+diff --git a/components/mpas-seaice/src/shared/mpas_seaice_column.F b/components/mpas-seaice/src/shared/mpas_seaice_column.F
+index 4e4d4dc7626e..8fbf0ea4c5ed 100644
+--- a/components/mpas-seaice/src/shared/mpas_seaice_column.F
++++ b/components/mpas-seaice/src/shared/mpas_seaice_column.F
+@@ -1360,6 +1360,7 @@ subroutine column_vertical_thermodynamics(domain, clock)
+          atmosReferenceTemperature2m, &
+          atmosReferenceHumidity2m, &
+          atmosReferenceSpeed10m, &
++         atmosSpeed10mWithGusts, &
+          airOceanDragCoefficientRatio, &
+          oceanDragCoefficient, &
+          oceanDragCoefficientSkin, &
+@@ -1594,6 +1595,7 @@ subroutine column_vertical_thermodynamics(domain, clock)
+        call MPAS_pool_get_array(atmos_coupling, "atmosReferenceTemperature2m", atmosReferenceTemperature2m)
+        call MPAS_pool_get_array(atmos_coupling, "atmosReferenceHumidity2m", atmosReferenceHumidity2m)
+        call MPAS_pool_get_array(atmos_coupling, "atmosReferenceSpeed10m", atmosReferenceSpeed10m)
++       call MPAS_pool_get_array(atmos_coupling, "atmosSpeed10mWithGusts", atmosSpeed10mWithGusts)
+ 
+        call MPAS_pool_get_array(atmos_forcing, "windSpeed", windSpeed)
+ 
+@@ -1799,6 +1801,7 @@ subroutine column_vertical_thermodynamics(domain, clock)
+                atmosReferenceTemperature2m(iCell), &
+                atmosReferenceHumidity2m(iCell), &
+                atmosReferenceSpeed10m(iCell), &
++               atmosSpeed10mWithGusts(iCell), &
+                airOceanDragCoefficientRatio(iCell), &
+                oceanDragCoefficient(iCell), &
+                oceanDragCoefficientSkin(iCell), &
+@@ -1959,6 +1962,7 @@ subroutine column_vertical_thermodynamics(domain, clock)
+              call mpas_log_write("atmosReferenceTemperature2m: $r", messageType=MPAS_LOG_ERR, realArgs=(/atmosReferenceTemperature2m(iCell)/))
+              call mpas_log_write("atmosReferenceHumidity2m: $r", messageType=MPAS_LOG_ERR, realArgs=(/atmosReferenceHumidity2m(iCell)/))
+              call mpas_log_write("atmosReferenceSpeed10m: $r", messageType=MPAS_LOG_ERR, realArgs=(/atmosReferenceSpeed10m(iCell)/))
++             call mpas_log_write("atmosSpeed10mWithGusts: $r", messageType=MPAS_LOG_ERR, realArgs=(/atmosSpeed10mWithGusts(iCell)/))
+              call mpas_log_write("airOceanDragCoefficientRatio: $r", messageType=MPAS_LOG_ERR, realArgs=(/airOceanDragCoefficientRatio(iCell)/))
+              call mpas_log_write("oceanDragCoefficient: $r", messageType=MPAS_LOG_ERR, realArgs=(/oceanDragCoefficient(iCell)/))
+              call mpas_log_write("oceanDragCoefficientSkin: $r", messageType=MPAS_LOG_ERR, realArgs=(/oceanDragCoefficientSkin(iCell)/))
+@@ -12874,7 +12878,8 @@ subroutine seaice_column_reinitialize_atmospheric_fluxes(domain)
+          absorbedShortwaveFlux, &
+          atmosReferenceTemperature2m, &
+          atmosReferenceHumidity2m, &
+-         atmosReferenceSpeed10m
++         atmosReferenceSpeed10m, &
++         atmosSpeed10mWithGusts
+ 
+     logical, pointer :: &
+          config_use_column_package
+@@ -12891,6 +12896,7 @@ subroutine seaice_column_reinitialize_atmospheric_fluxes(domain)
+        call MPAS_pool_get_array(atmosCouplingPool, "atmosReferenceTemperature2m", atmosReferenceTemperature2m)
+        call MPAS_pool_get_array(atmosCouplingPool, "atmosReferenceHumidity2m", atmosReferenceHumidity2m)
+        call MPAS_pool_get_array(atmosCouplingPool, "atmosReferenceSpeed10m", atmosReferenceSpeed10m)
++       call MPAS_pool_get_array(atmosCouplingPool, "atmosSpeed10mWithGusts", atmosSpeed10mWithGusts)
+ 
+        airStressCellU(:)              = 0.0_RKIND
+        airStressCellV(:)              = 0.0_RKIND
+@@ -12898,6 +12904,7 @@ subroutine seaice_column_reinitialize_atmospheric_fluxes(domain)
+        atmosReferenceTemperature2m(:) = 0.0_RKIND
+        atmosReferenceHumidity2m(:)    = 0.0_RKIND
+        atmosReferenceSpeed10m(:)      = 0.0_RKIND
++       atmosSpeed10mWithGusts(:)      = 0.0_RKIND
+ 
+        call MPAS_pool_get_config(block % configs, "config_use_column_package", config_use_column_package)
+ 
+diff --git a/components/mpas-seaice/src/shared/mpas_seaice_forcing.F b/components/mpas-seaice/src/shared/mpas_seaice_forcing.F
+index b7c99578d91c..da409c61865c 100644
+--- a/components/mpas-seaice/src/shared/mpas_seaice_forcing.F
++++ b/components/mpas-seaice/src/shared/mpas_seaice_forcing.F
+@@ -3149,6 +3149,7 @@ subroutine reset_atmospheric_coupler_fluxes(domain)
+          airStressCellU, &
+          airStressCellV, &
+          atmosReferenceSpeed10m, &
++         atmosSpeed10mWithGusts, &
+          atmosReferenceTemperature2m, &
+          atmosReferenceHumidity2m
+ 
+@@ -3180,6 +3181,7 @@ subroutine reset_atmospheric_coupler_fluxes(domain)
+        call MPAS_pool_get_array(shortwave, "absorbedShortwaveFlux", absorbedShortwaveFlux)
+ 
+        call MPAS_pool_get_array(atmosCoupling, 'atmosReferenceSpeed10m', atmosReferenceSpeed10m)
++       call MPAS_pool_get_array(atmosCoupling, 'atmosSpeed10mWithGusts', atmosSpeed10mWithGusts)
+        call MPAS_pool_get_array(atmosCoupling, 'atmosReferenceTemperature2m', atmosReferenceTemperature2m)
+        call MPAS_pool_get_array(atmosCoupling, 'atmosReferenceHumidity2m', atmosReferenceHumidity2m)
+ 
+@@ -3194,6 +3196,7 @@ subroutine reset_atmospheric_coupler_fluxes(domain)
+        absorbedShortwaveFlux       = 0.0_RKIND
+ 
+        atmosReferenceSpeed10m      = 0.0_RKIND
++       atmosSpeed10mWithGusts      = 0.0_RKIND
+        atmosReferenceTemperature2m = 0.0_RKIND
+        atmosReferenceHumidity2m    = 0.0_RKIND
+ 
+diff --git a/driver-mct/main/seq_flux_mct.F90 b/driver-mct/main/seq_flux_mct.F90
+index 487e4ea8febb..92782264faae 100644
+--- a/driver-mct/main/seq_flux_mct.F90
++++ b/driver-mct/main/seq_flux_mct.F90
+@@ -71,6 +71,7 @@ module seq_flux_mct
+   real(r8), allocatable ::  tref (:)  ! diagnostic:  2m ref T
+   real(r8), allocatable ::  qref (:)  ! diagnostic:  2m ref Q
+   real(r8), allocatable :: duu10n(:)  ! diagnostic: 10m wind speed squared
++  real(r8), allocatable :: u10res(:)  ! diagnostic: 10m "resolved" (no gustiness) wind speed (m/s)^2
+ 
+   real(r8), allocatable :: fswpen (:) ! fraction of sw penetrating ocn surface layer
+   real(r8), allocatable :: ocnsal (:) ! ocean salinity
+@@ -171,6 +172,7 @@ module seq_flux_mct
+   integer :: index_xao_So_ssq
+   integer :: index_xao_So_duu10n
+   integer :: index_xao_So_u10
++  integer :: index_xao_So_u10withgusts
+   integer :: index_xao_So_fswpen
+   integer :: index_xao_So_warm_diurn
+   integer :: index_xao_So_salt_diurn
+@@ -343,6 +345,9 @@ subroutine seq_flux_init_mct(comp, fractions)
+     allocate(duu10n(nloc),stat=ier)
+     if(ier/=0) call mct_die(subName,'allocate duu10n',ier)
+     duu10n = 0.0_r8
++    allocate(u10res(nloc),stat=ier)
++    if(ier/=0) call mct_die(subName,'allocate u10res',ier)
++    u10res = 0.0_r8
+ 
+     !--- flux_diurnal cycle flux fields ---
+     allocate(uGust(nloc),stat=ier)
+@@ -744,6 +749,8 @@ subroutine seq_flux_initexch_mct(atm, ocn, mpicom_cplid, cplid)
+     if(ier/=0) call mct_die(subName,'allocate qref',ier)
+     allocate(duu10n(nloc_a2o),stat=ier)
+     if(ier/=0) call mct_die(subName,'allocate duu10n',ier)
++    allocate(u10res(nloc_a2o),stat=ier)
++    if(ier/=0) call mct_die(subName,'allocate u10res',ier)
+ 
+     ! set emask
+ 
+@@ -986,6 +993,7 @@ subroutine seq_flux_atmocnexch_mct( infodata, atm, ocn, fractions_a, fractions_o
+     integer(in) :: index_tref
+     integer(in) :: index_qref
+     integer(in) :: index_duu10n
++    integer(in) :: index_u10withgusts
+     integer(in) :: index_ustar
+     integer(in) :: index_ssq
+     integer(in) :: index_re
+@@ -1138,8 +1146,9 @@ subroutine seq_flux_atmocnexch_mct( infodata, atm, ocn, fractions_a, fractions_o
+             warmMaxInc, windMaxInc, qSolInc, windInc, nInc, &
+             tbulk, tskin, tskin_day, tskin_night, &
+             cskin, cskin_night, tod, dt,          &
+-            duu10n,ustar, re  , ssq , missval = 0.0_r8, &
++            duu10n, ustar, re  , ssq , missval = 0.0_r8, &
+             cold_start=cold_start, wsresp=wsresp, tau_est=tau_est)
++       u10res = sqrt(duu10n) ! atm-supplied gustiness not implemented for flux_diurnal
+     else if (ocn_surface_flux_scheme.eq.2) then
+        call shr_flux_atmOcn_UA(nloc_a2o , zbot , ubot, vbot, thbot, &
+             shum , shum_16O , shum_HDO, shum_18O, dens , tbot, pslv, &
+@@ -1148,6 +1157,7 @@ subroutine seq_flux_atmocnexch_mct( infodata, atm, ocn, fractions_a, fractions_o
+             evap , evap_16O, evap_HDO, evap_18O, taux, tauy, tref, qref , &
+             duu10n,ustar, re  , ssq , missval = 0.0_r8, &
+             wsresp=wsresp, tau_est=tau_est)
++       u10res = sqrt(duu10n) ! atm-supplied gustiness not implemented for UA
+     else
+ 
+        call shr_flux_atmocn (nloc_a2o , zbot , ubot, vbot, thbot, &
+@@ -1157,7 +1167,7 @@ subroutine seq_flux_atmocnexch_mct( infodata, atm, ocn, fractions_a, fractions_o
+             roce_16O, roce_HDO, roce_18O,    &
+             evap , evap_16O, evap_HDO, evap_18O, taux, tauy, tref, qref , &
+             ocn_surface_flux_scheme, &
+-            duu10n,ustar, re  , ssq , missval = 0.0_r8, &
++            duu10n, u10res, ustar, re  , ssq , missval = 0.0_r8, &
+             wsresp=wsresp, tau_est=tau_est, ugust=ugust)
+     endif
+ 
+@@ -1176,6 +1186,7 @@ subroutine seq_flux_atmocnexch_mct( infodata, atm, ocn, fractions_a, fractions_o
+     index_tref   = mct_aVect_indexRA(xaop_ae,"So_tref")
+     index_qref   = mct_aVect_indexRA(xaop_ae,"So_qref")
+     index_duu10n = mct_aVect_indexRA(xaop_ae,"So_duu10n")
++    index_u10withgusts = mct_aVect_indexRA(xaop_ae,"So_u10withgusts")
+     index_ustar  = mct_aVect_indexRA(xaop_ae,"So_ustar")
+     index_ssq    = mct_aVect_indexRA(xaop_ae,"So_ssq")
+     index_re     = mct_aVect_indexRA(xaop_ae,"So_re")
+@@ -1216,7 +1227,8 @@ subroutine seq_flux_atmocnexch_mct( infodata, atm, ocn, fractions_a, fractions_o
+        xaop_oe%rAttr(index_ssq   ,io) = xaop_oe%rAttr(index_ssq   ,io) + ssq(n) * wt   ! s.hum. saturation at Ts
+        xaop_oe%rAttr(index_lwup  ,io) = xaop_oe%rAttr(index_lwup  ,io) + lwup(n)* wt
+        xaop_oe%rAttr(index_duu10n,io) = xaop_oe%rAttr(index_duu10n,io) + duu10n(n)*wt
+-       xaop_oe%rAttr(index_u10   ,io) = xaop_oe%rAttr(index_u10   ,io) + sqrt(duu10n(n))*wt
++       xaop_oe%rAttr(index_u10   ,io) = xaop_oe%rAttr(index_u10   ,io) + u10res(n)*wt
++       xaop_oe%rAttr(index_u10withgusts,io) = xaop_oe%rAttr(index_u10withgusts,io) + sqrt(duu10n(n))*wt
+        xaop_oe%rAttr(index_sumwt ,io) = xaop_oe%rAttr(index_sumwt ,io) + wt
+     enddo
+ 
+@@ -1250,7 +1262,8 @@ subroutine seq_flux_atmocnexch_mct( infodata, atm, ocn, fractions_a, fractions_o
+        xaop_ae%rAttr(index_ssq   ,ia) = xaop_ae%rAttr(index_ssq   ,ia) + ssq(n) * wt   ! s.hum. saturation at Ts
+        xaop_ae%rAttr(index_lwup  ,ia) = xaop_ae%rAttr(index_lwup  ,ia) + lwup(n)* wt
+        xaop_ae%rAttr(index_duu10n,ia) = xaop_ae%rAttr(index_duu10n,ia) + duu10n(n)*wt
+-       xaop_ae%rAttr(index_u10   ,ia) = xaop_ae%rAttr(index_u10   ,ia) + sqrt(duu10n(n))*wt
++       xaop_ae%rAttr(index_u10   ,ia) = xaop_ae%rAttr(index_u10   ,ia) + u10res(n)*wt
++       xaop_ae%rAttr(index_u10withgusts,ia) = xaop_ae%rAttr(index_u10withgusts,ia) + sqrt(duu10n(n))*wt
+        xaop_ae%rAttr(index_sumwt ,ia) = xaop_ae%rAttr(index_sumwt ,ia) + wt
+     enddo
+ 
+@@ -1366,6 +1379,7 @@ subroutine seq_flux_atmocn_mct(infodata, tod, dt, a2x, o2x, xao)
+        index_xao_So_re     = mct_aVect_indexRA(xao,'So_re')
+        index_xao_So_ssq    = mct_aVect_indexRA(xao,'So_ssq')
+        index_xao_So_u10    = mct_aVect_indexRA(xao,'So_u10')
++       index_xao_So_u10withgusts = mct_aVect_indexRA(xao,'So_u10withgusts')
+        index_xao_So_duu10n = mct_aVect_indexRA(xao,'So_duu10n')
+        index_xao_Faox_taux = mct_aVect_indexRA(xao,'Faox_taux')
+        index_xao_Faox_tauy = mct_aVect_indexRA(xao,'Faox_tauy')
+@@ -1602,6 +1616,7 @@ subroutine seq_flux_atmocn_mct(infodata, tod, dt, a2x, o2x, xao)
+                                 !consistent with mrgx2a fraction
+                                 !duu10n,ustar, re  , ssq, missval = 0.0_r8 )
+             cold_start=cold_start, wsresp=wsresp, tau_est=tau_est)
++       u10res = sqrt(duu10n) ! atm-supplied gustiness not implemented for flux_diurnal
+     else if (ocn_surface_flux_scheme.eq.2) then
+        call shr_flux_atmOcn_UA(nloc , zbot , ubot, vbot, thbot, &
+             shum , shum_16O , shum_HDO, shum_18O, dens , tbot, pslv, &
+@@ -1609,6 +1624,7 @@ subroutine seq_flux_atmocn_mct(infodata, tod, dt, a2x, o2x, xao)
+             roce_16O, roce_HDO, roce_18O,    &
+             evap , evap_16O, evap_HDO, evap_18O, taux , tauy, tref, qref , &
+             duu10n,ustar, re  , ssq, wsresp=wsresp, tau_est=tau_est)
++       u10res = sqrt(duu10n) ! atm-supplied gustiness not implemented for UA
+     else
+        call shr_flux_atmocn (nloc , zbot , ubot, vbot, thbot, &
+             shum , shum_16O , shum_HDO, shum_18O, dens , tbot, uocn, vocn , &
+@@ -1617,7 +1633,7 @@ subroutine seq_flux_atmocn_mct(infodata, tod, dt, a2x, o2x, xao)
+             roce_16O, roce_HDO, roce_18O,    &
+             evap , evap_16O, evap_HDO, evap_18O, taux , tauy, tref, qref , &
+             ocn_surface_flux_scheme, &
+-            duu10n,ustar, re  , ssq, &
++            duu10n, u10res, ustar, re  , ssq, &
+             wsresp=wsresp, tau_est=tau_est, ugust=ugust_atm)
+        !missval should not be needed if flux calc
+        !consistent with mrgx2a fraction
+@@ -1641,7 +1657,8 @@ subroutine seq_flux_atmocn_mct(infodata, tod, dt, a2x, o2x, xao)
+           xao%rAttr(index_xao_So_ssq   ,n) = ssq(n)    ! s.hum. saturation at Ts
+           xao%rAttr(index_xao_Faox_lwup,n) = lwup(n)
+           xao%rAttr(index_xao_So_duu10n,n) = duu10n(n)
+-          xao%rAttr(index_xao_So_u10   ,n) = sqrt(duu10n(n))
++          xao%rAttr(index_xao_So_u10   ,n) = u10res(n)
++          xao%rAttr(index_xao_So_u10withgusts,n) = sqrt(duu10n(n))
+           xao%rAttr(index_xao_So_warm_diurn       ,n) = warm(n)
+           xao%rAttr(index_xao_So_salt_diurn       ,n) = salt(n)
+           xao%rAttr(index_xao_So_speed_diurn      ,n) = speed(n)
+diff --git a/driver-mct/shr/seq_flds_mod.F90 b/driver-mct/shr/seq_flds_mod.F90
+index caa0c615a3ce..478f19e8e6e8 100644
+--- a/driver-mct/shr/seq_flds_mod.F90
++++ b/driver-mct/shr/seq_flds_mod.F90
+@@ -1278,10 +1278,21 @@ subroutine seq_flds_set(nmlfile, ID, infodata)
+     call seq_flds_add(x2a_states,"Sx_u10")
+     longname = '10m wind'
+     stdname  = '10m_wind'
+-    units    = 'm'
++    units    = 'm s-1'
+     attname  = 'u10'
+     call metadata_set(attname, longname, stdname, units)
+ 
++    ! 10 meter wind with gustiness
++    call seq_flds_add(i2x_states,"Si_u10withgusts")
++    call seq_flds_add(xao_states,"So_u10withgusts")
++    call seq_flds_add(l2x_states,"Sl_u10withgusts")
++    call seq_flds_add(x2a_states,"Sx_u10withgusts")
++    longname = '10m wind with gustiness'
++    stdname  = ''
++    units    = 'm s-1'
++    attname  = 'u10withgusts'
++    call metadata_set(attname, longname, stdname, units)
++
+     ! Zonal surface stress"
+     call seq_flds_add(l2x_fluxes,"Fall_taux")
+     call seq_flds_add(xao_fluxes,"Faox_taux")
+diff --git a/share/util/shr_flux_mod.F90 b/share/util/shr_flux_mod.F90
+index ff8b30bc5286..cb62a489fde3 100644
+--- a/share/util/shr_flux_mod.F90
++++ b/share/util/shr_flux_mod.F90
+@@ -149,7 +149,7 @@ SUBROUTINE shr_flux_atmOcn(nMax  ,zbot  ,ubot  ,vbot  ,thbot ,   &
+            &               evap  ,evap_16O, evap_HDO, evap_18O, &
+            &               taux  ,tauy  ,tref  ,qref  ,   &
+            &               ocn_surface_flux_scheme, &
+-           &               duu10n,  ustar_sv   ,re_sv ,ssq_sv,   &
++           &               duu10n, u10res, ustar_sv   ,re_sv ,ssq_sv,   &
+            &               missval, wsresp, tau_est, ugust)
+ 
+ ! !USES:
+@@ -194,6 +194,7 @@ SUBROUTINE shr_flux_atmOcn(nMax  ,zbot  ,ubot  ,vbot  ,thbot ,   &
+    real(R8),intent(out)  ::  tref (nMax) ! diag:  2m ref height T     (K)
+    real(R8),intent(out)  ::  qref (nMax) ! diag:  2m ref humidity (kg/kg)
+    real(R8),intent(out)  :: duu10n(nMax) ! diag: 10m wind speed squared (m/s)^2
++   real(R8),intent(out)  :: u10res(nMax) ! diag: 10m "resolved" (no gustiness) wind speed (m/s)^2
+ 
+    real(R8),intent(out),optional :: ustar_sv(nMax) ! diag: ustar
+    real(R8),intent(out),optional :: re_sv   (nMax) ! diag: sqrt of exchange coefficient (water)
+@@ -481,6 +482,7 @@ SUBROUTINE shr_flux_atmOcn(nMax  ,zbot  ,ubot  ,vbot  ,thbot ,   &
+         qref(n) =  qbot(n) - delq*fac
+ 
+         duu10n(n) = u10n*u10n ! 10m wind speed squared
++        u10res(n) = u10n*wind_adj/vmag
+ 
+         !------------------------------------------------------------
+         ! optional diagnostics, needed for water tracer fluxes (dcn)
+@@ -505,6 +507,7 @@ SUBROUTINE shr_flux_atmOcn(nMax  ,zbot  ,ubot  ,vbot  ,thbot ,   &
+         tref  (n) = spval  !  2m reference height temperature (K)
+         qref  (n) = spval  !  2m reference height humidity (kg/kg)
+         duu10n(n) = spval  ! 10m wind speed squared (m/s)^2
++        u10res(n) = spval  ! 10m "resolved" (no gustiness) wind speed (m/s)^2
+ 
+         if (present(ustar_sv)) ustar_sv(n) = spval
+         if (present(re_sv   )) re_sv   (n) = spval
+@@ -585,6 +588,7 @@ SUBROUTINE shr_flux_atmOcn(nMax  ,zbot  ,ubot  ,vbot  ,thbot ,   &
+         tref(n) = trf
+         qref(n) = qrf
+         duu10n(n) = urf**2+vrf**2
++        u10res(n) = sqrt(duu10n(n)) ! atm-supplied gustiness not implemented for COARE
+ 
+         !------------------------------------------------------------
+         ! optional diagnostics, needed for water tracer fluxes (dcn)
+@@ -609,6 +613,7 @@ SUBROUTINE shr_flux_atmOcn(nMax  ,zbot  ,ubot  ,vbot  ,thbot ,   &
+         tref     (n) = spval  !  2m reference height temperature (K)
+         qref     (n) = spval  !  2m reference height humidity (kg/kg)
+         duu10n   (n) = spval  ! 10m wind speed squared (m/s)^2
++        u10res   (n) = spval  ! 10m "resolved" (no gustiness) wind speed (m/s)^2
+ 
+         if (present(ustar_sv)) ustar_sv(n) = spval
+         if (present(re_sv   )) re_sv   (n) = spval
+
+From 2ca2a71ff81d8029769b03925d29b00ba2e61807 Mon Sep 17 00:00:00 2001
+From: Sean Patrick Santos <SeanPatrickSantos@gmail.com>
+Date: Mon, 31 Jul 2023 17:24:58 -0700
+Subject: [PATCH 5/5] Prevent ELM from adding extra gustiness when EAM supplies
+ gustiness.
+
+When EAM is running, it provides a gustiness value that includes the
+effects of boundary layer turbulence. This is redundant with the
+calculation of convective gustiness `wc` that is performed by ELM.
+See #5837. This commit turns off the calculation of `wc` when the
+`atm_gustiness` namelist variable is set, signifying that EAM is
+providing the gustiness value.
+
+This commit also adds the `force_land_gustiness` option to ELM. This
+option forces the old behavior, where ELM adds gustiness regardless
+of what the atmosphere model does.
+
+[CC] for cases where EAM is running, should be bit-for-bit otherwise.
+Expected effect is to increase wind speeds over land, and likely
+reduce surface fluxes a bit when wind speed is low.
+[NML]
+---
+ .../elm/bld/namelist_files/namelist_defaults.xml    |  2 ++
+ .../elm/bld/namelist_files/namelist_definition.xml  |  9 +++++++++
+ .../elm/src/biogeophys/BareGroundFluxesMod.F90      | 13 +++++++++----
+ components/elm/src/biogeophys/CanopyFluxesMod.F90   | 13 +++++++++----
+ .../elm/src/biogeophys/FrictionVelocityMod.F90      |  1 +
+ components/elm/src/biogeophys/LakeFluxesMod.F90     | 13 +++++++++----
+ components/elm/src/biogeophys/UrbanFluxesMod.F90    | 13 +++++++++----
+ components/elm/src/main/controlMod.F90              |  6 ++++--
+ 8 files changed, 52 insertions(+), 18 deletions(-)
+
+diff --git a/components/elm/bld/namelist_files/namelist_defaults.xml b/components/elm/bld/namelist_files/namelist_defaults.xml
+index 96f55407aa6e..db74974a023a 100644
+--- a/components/elm/bld/namelist_files/namelist_defaults.xml
++++ b/components/elm/bld/namelist_files/namelist_defaults.xml
+@@ -87,6 +87,8 @@ attributes from the config_cache.xml file (with keys converted to upper-case).
+ <implicit_stress>.false.</implicit_stress>
+ <!-- The atmosphere provides gustiness separate from mean wind. -->
+ <atm_gustiness>.false.</atm_gustiness>
++<!-- Force the land to add further gustiness to any provided by the atmosphere. -->
++<force_land_gustiness>.false.</force_land_gustiness>
+ 
+ <!-- ========================================================================================  -->
+ <!-- VSFM default                                                                              -->
+diff --git a/components/elm/bld/namelist_files/namelist_definition.xml b/components/elm/bld/namelist_files/namelist_definition.xml
+index a113076e22df..1db6e9922704 100644
+--- a/components/elm/bld/namelist_files/namelist_definition.xml
++++ b/components/elm/bld/namelist_files/namelist_definition.xml
+@@ -594,6 +594,15 @@ If TRUE, use implicit method to calculate stresses output to atmosphere.
+ If TRUE, use an extra gustiness supplied by the atmosphere in addition to mean wind.
+ </entry>
+ 
++<entry id="force_land_gustiness" type="logical" category="elm_physics"
++       group="elm_inparm" valid_values="">
++If TRUE, use the land's gustiness parameterization to add gustiness to the mean
++wind regardless of whether the atmosphere supplies its own gustiness (despite
++the risk of "double-counting" some convection in the boundary layer). If FALSE,
++the land's gustiness parameterization will be used only if atm_gustiness is also
++false.
++</entry>
++
+ <!-- TOP solar radiation parameterization                        -->
+ <entry id="use_top_solar_rad" type="logical" category="elm_physics"
+        group="elm_inparm" valid_values="" value=".false.">
+diff --git a/components/elm/src/biogeophys/BareGroundFluxesMod.F90 b/components/elm/src/biogeophys/BareGroundFluxesMod.F90
+index 15970484bf70..7932887d5bc9 100644
+--- a/components/elm/src/biogeophys/BareGroundFluxesMod.F90
++++ b/components/elm/src/biogeophys/BareGroundFluxesMod.F90
+@@ -48,7 +48,8 @@ subroutine BareGroundFluxes(bounds, num_nolakeurbanp, filter_nolakeurbanp, &
+     use elm_varcon           , only : cpair, vkc, grav, denice, denh2o
+     use elm_varctl           , only : iulog, use_lch4
+     use landunit_varcon      , only : istsoil, istcrop
+-    use FrictionVelocityMod  , only : FrictionVelocity, MoninObukIni, implicit_stress
++    use FrictionVelocityMod  , only : FrictionVelocity, MoninObukIni, &
++         implicit_stress, atm_gustiness, force_land_gustiness
+     use QSatMod              , only : QSat
+     use SurfaceResistanceMod , only : do_soilevap_beta
+     use elm_time_manager     , only : get_nstep
+@@ -303,9 +304,13 @@ subroutine BareGroundFluxes(bounds, num_nolakeurbanp, filter_nolakeurbanp, &
+                um(p) = max(ur(p),0.1_r8)
+             else                                      !unstable
+                zeta = max(-100._r8,min(zeta,-0.01_r8))
+-               wc = beta*(-grav*ustar(p)*thvstar*zii(c)/thv(c))**0.333_r8
+-               ugust_total(p) = sqrt(ugust(t)**2 + wc**2)
+-               um(p) = sqrt(ur(p)*ur(p) + wc*wc)
++               if ((.not. atm_gustiness) .or. force_land_gustiness) then
++                  wc = beta*(-grav*ustar(p)*thvstar*zii(c)/thv(c))**0.333_r8
++                  ugust_total(p) = sqrt(ugust(t)**2 + wc**2)
++                  um(p) = sqrt(ur(p)*ur(p) + wc*wc)
++               else
++                  um(p) = max(ur(p),0.1_r8)
++               end if
+             end if
+             obu(p) = zldis(p)/zeta
+          end do
+diff --git a/components/elm/src/biogeophys/CanopyFluxesMod.F90 b/components/elm/src/biogeophys/CanopyFluxesMod.F90
+index 9d8170dc3594..0732f48d733a 100755
+--- a/components/elm/src/biogeophys/CanopyFluxesMod.F90
++++ b/components/elm/src/biogeophys/CanopyFluxesMod.F90
+@@ -103,7 +103,8 @@ subroutine CanopyFluxes(bounds,  num_nolakeurbanp, filter_nolakeurbanp, &
+     use elm_varsur         , only : firrig
+     use TopounitType       , only : top_pp
+     use QSatMod            , only : QSat
+-    use FrictionVelocityMod, only : FrictionVelocity, MoninObukIni, implicit_stress
++    use FrictionVelocityMod, only : FrictionVelocity, MoninObukIni, &
++         implicit_stress, atm_gustiness, force_land_gustiness
+     use SoilWaterRetentionCurveMod, only : soil_water_retention_curve_type
+     use SurfaceResistanceMod, only : getlblcef
+     use PhotosynthesisType, only : photosyns_vars_TimeStepInit
+@@ -1125,9 +1126,13 @@ subroutine CanopyFluxes(bounds,  num_nolakeurbanp, filter_nolakeurbanp, &
+                um(p) = max(ur(p),0.1_r8)
+             else                     !unstable
+                zeta = max(-100._r8,min(zeta,-0.01_r8))
+-               wc = beta*(-grav*ustar(p)*thvstar*zii/thv(c))**0.333_r8
+-               ugust_total(p) = sqrt(ugust(t)**2 + wc**2)
+-               um(p) = sqrt(ur(p)*ur(p)+wc*wc)
++               if ((.not. atm_gustiness) .or. force_land_gustiness) then
++                  wc = beta*(-grav*ustar(p)*thvstar*zii/thv(c))**0.333_r8
++                  ugust_total(p) = sqrt(ugust(t)**2 + wc**2)
++                  um(p) = sqrt(ur(p)*ur(p)+wc*wc)
++               else
++                  um(p) = max(ur(p),0.1_r8)
++               end if
+             end if
+             obu(p) = zldis(p)/zeta
+ 
+diff --git a/components/elm/src/biogeophys/FrictionVelocityMod.F90 b/components/elm/src/biogeophys/FrictionVelocityMod.F90
+index 0da751c34cda..347f2ffb962e 100644
+--- a/components/elm/src/biogeophys/FrictionVelocityMod.F90
++++ b/components/elm/src/biogeophys/FrictionVelocityMod.F90
+@@ -20,6 +20,7 @@ module FrictionVelocityMod
+ 
+   logical, public :: implicit_stress = .false.
+   logical, public :: atm_gustiness = .false.
++  logical, public :: force_land_gustiness = .false.
+   !
+   ! !PUBLIC MEMBER FUNCTIONS:
+   public :: FrictionVelocity       ! Calculate friction velocity
+diff --git a/components/elm/src/biogeophys/LakeFluxesMod.F90 b/components/elm/src/biogeophys/LakeFluxesMod.F90
+index 1cf932308b44..d149e4c99111 100644
+--- a/components/elm/src/biogeophys/LakeFluxesMod.F90
++++ b/components/elm/src/biogeophys/LakeFluxesMod.F90
+@@ -57,7 +57,8 @@ subroutine LakeFluxes(bounds, num_lakec, filter_lakec, num_lakep, filter_lakep,
+     use LakeCon             , only : lake_use_old_fcrit_minz0
+     use LakeCon             , only : minz0lake, cur0, cus, curm, fcrit
+     use QSatMod             , only : QSat
+-    use FrictionVelocityMod , only : FrictionVelocity, MoninObukIni, implicit_stress
++    use FrictionVelocityMod , only : FrictionVelocity, MoninObukIni, &
++         implicit_stress, atm_gustiness, force_land_gustiness
+     use elm_time_manager    , only : get_nstep
+     !
+     ! !ARGUMENTS:
+@@ -495,9 +496,13 @@ subroutine LakeFluxes(bounds, num_lakec, filter_lakec, num_lakep, filter_lakep,
+                um(p) = max(ur(p),0.1_r8)
+             else                     !unstable
+                zeta = max(-100._r8,min(zeta,-0.01_r8))
+-               wc = beta1*(-grav*ustar(p)*thvstar*zii/thv(c))**0.333_r8
+-               ugust_total(p) = sqrt(ugust(t)**2 + wc**2)
+-               um(p) = sqrt(ur(p)*ur(p)+wc*wc)
++               if ((.not. atm_gustiness) .or. force_land_gustiness) then
++                  wc = beta1*(-grav*ustar(p)*thvstar*zii/thv(c))**0.333_r8
++                  ugust_total(p) = sqrt(ugust(t)**2 + wc**2)
++                  um(p) = sqrt(ur(p)*ur(p)+wc*wc)
++               else
++                  um(p) = max(ur(p),0.1_r8)
++               end if
+             end if
+             obu(p) = zldis(p)/zeta
+ 
+diff --git a/components/elm/src/biogeophys/UrbanFluxesMod.F90 b/components/elm/src/biogeophys/UrbanFluxesMod.F90
+index 65b8abd9f2ef..0897b14fba86 100644
+--- a/components/elm/src/biogeophys/UrbanFluxesMod.F90
++++ b/components/elm/src/biogeophys/UrbanFluxesMod.F90
+@@ -64,7 +64,8 @@ subroutine UrbanFluxes (bounds, num_nourbanl, filter_nourbanl,
+     use column_varcon       , only : icol_shadewall, icol_road_perv, icol_road_imperv
+     use column_varcon       , only : icol_roof, icol_sunwall
+     use filterMod           , only : filter
+-    use FrictionVelocityMod , only : FrictionVelocity, MoninObukIni, implicit_stress
++    use FrictionVelocityMod , only : FrictionVelocity, MoninObukIni, &
++         implicit_stress, atm_gustiness, force_land_gustiness
+     use QSatMod             , only : QSat
+     use elm_varpar          , only : maxpatch_urb, nlevurb, nlevgrnd
+     use elm_varctl          , only : use_vsfm
+@@ -713,9 +714,13 @@ subroutine UrbanFluxes (bounds, num_nourbanl, filter_nourbanl,
+                um(l) = max(ur(l),0.1_r8)
+             else                                      !unstable
+                zeta = max(-100._r8,min(zeta,-0.01_r8))
+-               wc = beta(l)*(-grav*ustar(l)*thvstar*zii(l)/thv_g(l))**0.333_r8
+-               ugust_total(l) = sqrt(ugust(t)**2 + wc**2)
+-               um(l) = sqrt(ur(l)*ur(l) + wc*wc)
++               if ((.not. atm_gustiness) .or. force_land_gustiness) then
++                  wc = beta(l)*(-grav*ustar(l)*thvstar*zii(l)/thv_g(l))**0.333_r8
++                  ugust_total(l) = sqrt(ugust(t)**2 + wc**2)
++                  um(l) = sqrt(ur(l)*ur(l) + wc*wc)
++               else
++                  um(l) = max(ur(l),0.1_r8)
++               end if
+             end if
+ 
+             obu(l) = zldis(l)/zeta
+diff --git a/components/elm/src/main/controlMod.F90 b/components/elm/src/main/controlMod.F90
+index efb0dc540c3e..8143b8e549b9 100755
+--- a/components/elm/src/main/controlMod.F90
++++ b/components/elm/src/main/controlMod.F90
+@@ -38,7 +38,7 @@ module controlMod
+   use CanopyHydrologyMod      , only: CanopyHydrology_readnl
+   use SurfaceAlbedoType        , only: albice, lake_melt_icealb
+   use UrbanParamsType         , only: urban_hac, urban_traffic
+-  use FrictionVelocityMod     , only: implicit_stress, atm_gustiness
++  use FrictionVelocityMod     , only: implicit_stress, atm_gustiness, force_land_gustiness
+   use elm_varcon              , only: h2osno_max
+   use elm_varctl              , only: use_dynroot
+   use AllocationMod         , only: nu_com_phosphatase,nu_com_nfix
+@@ -234,7 +234,7 @@ subroutine control_init( )
+ 
+     ! Stress options
+     namelist /elm_inparm/ &
+-         implicit_stress, atm_gustiness
++         implicit_stress, atm_gustiness, force_land_gustiness
+ 
+     ! vertical soil mixing variables
+     namelist /elm_inparm/  &
+@@ -827,6 +827,7 @@ subroutine control_spmd()
+     call mpi_bcast (urban_traffic , 1, MPI_LOGICAL, 0, mpicom, ier)
+     call mpi_bcast (implicit_stress, 1, MPI_LOGICAL, 0, mpicom, ier)
+     call mpi_bcast (atm_gustiness, 1, MPI_LOGICAL, 0, mpicom, ier)
++    call mpi_bcast (force_land_gustiness, 1, MPI_LOGICAL, 0, mpicom, ier)
+     call mpi_bcast (nsegspc, 1, MPI_INTEGER, 0, mpicom, ier)
+     call mpi_bcast (subgridflag , 1, MPI_INTEGER, 0, mpicom, ier)
+     call mpi_bcast (wrtdia, 1, MPI_LOGICAL, 0, mpicom, ier)
+@@ -1135,6 +1136,7 @@ subroutine control_print ()
+     write(iulog,*) '   urban traffic flux   = ', urban_traffic
+     write(iulog,*) '   implicit_stress   = ', implicit_stress
+     write(iulog,*) '   atm_gustiness   = ', atm_gustiness
++    write(iulog,*) '   force_land_gustiness   = ', force_land_gustiness
+     write(iulog,*) '   more vertical layers = ', more_vertlayers
+     
+     write(iulog,*) '   Sub-grid topographic effects on solar radiation   = ', use_top_solar_rad  ! TOP solar radiation parameterization
