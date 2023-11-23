@@ -1,0 +1,593 @@
+From 87fdc0fcb1f748f8d5b7dbf4e75de58d9367e540 Mon Sep 17 00:00:00 2001
+From: crterai <rterai@uci.edu>
+Date: Tue, 17 Nov 2020 17:25:45 -0800
+Subject: [PATCH 1/5] Allow RRTMG to write SPA rad output
+
+---
+ .../eam/src/physics/rrtmg/radconstants.F90    |  41 +++++-
+ .../eam/src/physics/rrtmg/radiation.F90       | 137 +++++++++++++++++-
+ 2 files changed, 176 insertions(+), 2 deletions(-)
+
+diff --git a/components/eam/src/physics/rrtmg/radconstants.F90 b/components/eam/src/physics/rrtmg/radconstants.F90
+index 4b4d85b6374e..db8ff58f8d6e 100644
+--- a/components/eam/src/physics/rrtmg/radconstants.F90
++++ b/components/eam/src/physics/rrtmg/radconstants.F90
+@@ -29,6 +29,11 @@ module radconstants
+   (/3250._r8, 4000._r8, 4650._r8, 5150._r8, 6150._r8, 7700._r8, 8050._r8, &
+    12850._r8,16000._r8,22650._r8,29000._r8,38000._r8,50000._r8, 2600._r8/)
+ 
++! Mapping from old RRTMG sw bands to new band ordering in RRTMGP
++integer, parameter, dimension(14), public :: rrtmg_to_rrtmgp_swbands = (/ &
++   14, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13 &
++/)
++
+ ! Solar irradiance at 1 A.U. in W/m^2 assumed by radiation code
+ ! Rescaled so that sum is precisely 1368.22 and fractional amounts sum to 1.0
+ real(r8), parameter :: solar_ref_band_irradiance(nbndsw) = & 
+@@ -109,7 +114,7 @@ module radconstants
+ public :: rad_gas_index
+ 
+ public :: get_number_sw_bands, &
+-          get_sw_spectral_boundaries, &
++          get_sw_spectral_boundaries, 
+           get_lw_spectral_boundaries, &
+           get_sw_spectral_midpoints, &
+           get_lw_spectral_midpoints, &
+@@ -253,6 +258,40 @@ subroutine get_sw_spectral_midpoints(band_midpoints, units)
+ end subroutine get_sw_spectral_midpoints
+       
+ 
++subroutine get_sw_spectral_midpoints(band_midpoints, units)
++   character(len=*), intent(in) :: units
++   real(r8), intent(out) :: band_midpoints(nswbands)
++   real(r8), dimension(nswbands) :: lower_bounds, upper_bounds
++   integer :: i
++
++   ! Get band limits
++   call get_sw_spectral_boundaries(lower_bounds, upper_bounds, units)
++
++   ! Compute band midpoints
++   band_midpoints = 0._r8
++   do i = 1,nswbands
++      band_midpoints(i) = (lower_bounds(i) + upper_bounds(i)) / 2._r8
++   end do
++end subroutine get_sw_spectral_midpoints
++
++!----------------------------------------------------------------------------
++
++subroutine get_lw_spectral_midpoints(band_midpoints, units)
++   character(len=*), intent(in) :: units
++   real(r8), intent(out) :: band_midpoints(nlwbands)
++   real(r8), dimension(nlwbands) :: lower_bounds, upper_bounds
++   integer :: i
++
++   ! Get band limits
++   call get_lw_spectral_boundaries(lower_bounds, upper_bounds, units)
++
++   ! Compute band midpoints
++   band_midpoints = 0._r8
++   do i = 1,nlwbands
++      band_midpoints(i) = (lower_bounds(i) + upper_bounds(i)) / 2._r8
++   end do
++end subroutine get_lw_spectral_midpoints
++
+ !------------------------------------------------------------------------------
+ integer function rad_gas_index(gasname)
+ 
+diff --git a/components/eam/src/physics/rrtmg/radiation.F90 b/components/eam/src/physics/rrtmg/radiation.F90
+index af2a9b74c36c..5c5ec5b24ea5 100644
+--- a/components/eam/src/physics/rrtmg/radiation.F90
++++ b/components/eam/src/physics/rrtmg/radiation.F90
+@@ -28,7 +28,9 @@ module radiation
+ use cam_logfile,     only: iulog
+ 
+ use rad_constituents, only: N_DIAG, rad_cnst_get_call_list, rad_cnst_get_info
+-use radconstants,     only: rrtmg_sw_cloudsim_band, rrtmg_lw_cloudsim_band, nswbands, nlwbands
++use radconstants,     only: rrtmg_sw_cloudsim_band, rrtmg_lw_cloudsim_band, nswbands, nlwbands, &
++                            rrtmg_to_rrtmgp_swbands, get_sw_spectral_midpoints, &
++                            get_lw_spectral_midpoints 
+ 
+ implicit none
+ private
+@@ -93,6 +95,10 @@ module radiation
+ logical :: pergro_mods = .false. ! for activating pergro mods
+ integer :: firstblock, lastblock      ! global block indices
+ 
++! Band midpoints; these need to be module variables because of how cam_history works;
++! add_hist_coord sets up pointers to these, so they need to persist.
++real(r8), target :: sw_band_midpoints(nswbands), lw_band_midpoints(nlwbands)
++
+ !===============================================================================
+ contains
+ !===============================================================================
+@@ -591,6 +597,20 @@ subroutine radiation_init(phys_state, pbuf)
+     call addfld('ICE_ICLD_VISTAU', (/ 'lev' /), 'A',  '1', 'Ice in-cloud extinction visible sw optical depth', &
+                                                        sampling_seq='rad_lwsw', flag_xyfill=.true.)
+ 
++    call get_sw_spectral_midpoints(sw_band_midpoints, 'cm-1')
++    call get_lw_spectral_midpoints(lw_band_midpoints, 'cm-1')
++    call add_hist_coord('swband', nswbands, 'Shortwave wavenumber', 'cm-1', sw_band_midpoints)
++    call add_hist_coord('lwband', nlwbands, 'Longwave wavenumber', 'cm-1', lw_band_midpoints)
++    ! Band-by-band aerosol optical properties
++    call addfld('AER_TAU_SW', (/'lev   ','swband'/), 'I', '1', &
++                'Aerosol shortwave extinction optical depth', sampling_seq='rad_lwsw') 
++    call addfld('AER_SSA_SW', (/'lev   ','swband'/), 'I', '1', &
++                'Aerosol shortwave single scattering albedo', sampling_seq='rad_lwsw') 
++    call addfld('AER_G_SW', (/'lev   ','swband'/), 'I', '1', &
++                'Aerosol shortwave assymmetry parameter', sampling_seq='rad_lwsw')
++    call addfld('AER_TAU_LW', (/'lev   ','lwband'/), 'I', '1', &
++                'Aerosol longwave absorption optical depth', sampling_seq='rad_lwsw')
++
+     ! get list of active radiation calls
+     call rad_cnst_get_call_list(active_calls)
+ 
+@@ -1037,6 +1057,12 @@ subroutine radiation_tend(state,ptend, pbuf, &
+     real(r8) :: aer_tau_w_f(pcols,0:pver,nbndsw) ! aerosol forward scattered fraction * w * tau
+     real(r8) :: aer_lw_abs (pcols,pver,nbndlw)   ! aerosol absorption optics depth (LW)
+ 
++    real(r8) :: aer_tau_bnd_sw(pcols,0:pver,nswbands) ! aerosol extinction optical depth
++    real(r8) :: aer_ssa_bnd_sw(pcols,0:pver,nswbands) ! aerosol single scattering albedo
++    real(r8) :: aer_asm_bnd_sw(pcols,0:pver,nswbands) ! aerosol assymetry parameter
++    real(r8) :: aer_tau_bnd_lw(pcols,0:pver,nlwbands) ! aerosol longwave optical depth
++    
++
+     ! Gathered indicies of day and night columns 
+     !  chunk_column_index = IdxDay(daylight_column_index)
+     integer :: Nday                      ! Number of daylight columns
+@@ -1286,6 +1312,41 @@ subroutine radiation_tend(state,ptend, pbuf, &
+                   call aer_rad_props_sw( icall, dt, state, pbuf, nnite, idxnite, is_cmip6_volc, &
+                                          aer_tau, aer_tau_w, aer_tau_w_g, aer_tau_w_f)
+ 
++                  aer_tau_bnd_sw = 0._r8
++                  aer_ssa_bnd_sw = 0._r8
++                  aer_asm_bnd_sw = 0._r8
++                  ! Extract quantities from products
++                  do icol = 1,ncol
++                     ! Copy cloud optical depth over directly
++                     aer_tau_bnd_sw(icol,1:pver,1:nswbands) = aer_tau(icol,1:pver,1:nswbands)
++                     ! Extract single scattering albedo from the product-defined fields
++                     where (aer_tau(icol,1:pver,1:nswbands) > 0)
++                        aer_ssa_bnd_sw(icol,1:pver,1:nswbands) &
++                           = aer_tau_w(icol,1:pver,1:nswbands) / aer_tau(icol,1:pver,1:nswbands)
++                     elsewhere
++                        aer_ssa_bnd_sw(icol,1:pver,1:nswbands) = 1._r8
++                     endwhere
++                     ! Extract assymmetry parameter from the product-defined fields
++                     where (aer_tau_w(icol,1:pver,1:nswbands) > 0)
++                        aer_asm_bnd_sw(icol,1:pver,1:nswbands) &
++                           = aer_tau_w_g(icol,1:pver,1:nswbands) / aer_tau_w(icol,1:pver,1:nswbands)
++                     elsewhere
++                        aer_asm_bnd_sw(icol,1:pver,1:nswbands) = 0._r8
++                     endwhere
++                  end do
++
++                  ! Now reorder bands to be consistent with RRTMGP
++                  ! TODO: fix the input files themselves!
++                  do icol = 1,size(aer_tau_bnd_sw,1)
++                     do ilay = 1,size(aer_tau_bnd_sw,2)
++                        aer_tau_bnd_sw(icol,ilay,:) = reordered(aer_tau_bnd_sw(icol,ilay,:), rrtmg_to_rrtmgp_swbands)
++                        aer_ssa_bnd_sw(icol,ilay,:) = reordered(aer_ssa_bnd_sw(icol,ilay,:), rrtmg_to_rrtmgp_swbands)
++                        aer_asm_bnd_sw(icol,ilay,:) = reordered(aer_asm_bnd_sw(icol,ilay,:), rrtmg_to_rrtmgp_swbands)
++                     end do
++                  end do
++
++
++                  call output_aerosol_optics_sw(state, aer_tau_bnd_sw, aer_ssa_bnd_sw, aer_asm_bnd_sw)
+                   call t_startf ('rad_rrtmg_sw')
+                   call rad_rrtmg_sw( &
+                        lchnk,        ncol,         num_rrtmg_levs, r_state,                    &
+@@ -1428,6 +1489,9 @@ subroutine radiation_tend(state,ptend, pbuf, &
+                   call  rrtmg_state_update( state, pbuf, icall, r_state)
+ 
+                   call aer_rad_props_lw(is_cmip6_volc, icall, dt, state, pbuf,  aer_lw_abs)
++
++                  ! Output aerosol LW optical depth
++                  call output_aerosol_optics_lw(state, aer_lw_abs)
+                   
+                   call t_startf ('rad_rrtmg_lw')
+                   call rad_rrtmg_lw( &
+@@ -1723,5 +1787,76 @@ end subroutine calc_col_mean
+ 
+ !===============================================================================
+ 
++subroutine output_aerosol_optics_sw(state, tau, ssa, asm)
++   use ppgrid, only: pver
++   use physics_types, only: physics_state
++   use cam_history, only: outfld
++   use radconstants, only: idx_sw_diag
++
++   type(physics_state), intent(in) :: state
++   real(r8), intent(in), dimension(:,:,:) :: tau, ssa, asm
++   character(len=*), parameter :: subname = 'output_aerosol_optics_sw'
++
++   ! Send outputs to history buffer
++   call outfld('AER_TAU_SW', &
++               tau(1:state%ncol,1:pver,1:nswbands), &
++               state%ncol, state%lchnk)
++   call outfld('AER_SSA_SW', &
++               ssa(1:state%ncol,1:pver,1:nswbands), &
++               state%ncol, state%lchnk)
++   call outfld('AER_G_SW', &
++               asm(1:state%ncol,1:pver,1:nswbands), &
++               state%ncol, state%lchnk)
++end subroutine output_aerosol_optics_sw
++
++!----------------------------------------------------------------------------
++
++subroutine output_aerosol_optics_lw(state, tau)
++
++   use ppgrid, only: pver
++   use physics_types, only: physics_state
++   use cam_history, only: outfld
++
++   type(physics_state), intent(in) :: state
++   real(r8), intent(in), dimension(:,:,:) :: tau
++
++   ! Output
++   call outfld('AER_TAU_LW', &
++               tau(1:state%ncol,1:pver,1:nlwbands), &
++               state%ncol, state%lchnk)
++
++end subroutine output_aerosol_optics_lw
++
++!----------------------------------------------------------------------------
++
++
++!----------------------------------------------------------------------------
++
++! Utility function to reorder an array given a new indexing
++function reordered(array_in, new_indexing) result(array_out)
++
++   ! Inputs
++   real(r8), intent(in) :: array_in(:)
++   integer, intent(in) :: new_indexing(:)
++
++   ! Output, reordered array
++   real(r8), dimension(size(array_in)) :: array_out
++
++   ! Loop index
++   integer :: ii
++
++   ! Check inputs
++   call assert(size(array_in) == size(new_indexing), 'reorder_array: sizes inconsistent')
++
++   ! Reorder array based on input index mapping, which maps old indices to new
++   do ii = 1,size(new_indexing)
++      array_out(ii) = array_in(new_indexing(ii))
++   end do
++
++end function reordered
++
++!----------------------------------------------------------------------------
++
++
+ end module radiation
+ 
+
+From aa240329c6803ee6033332404180b16954c6dbc4 Mon Sep 17 00:00:00 2001
+From: mahf708 <naser.mahfouz@pnnl.gov>
+Date: Tue, 17 Nov 2020 17:25:45 -0800
+Subject: [PATCH 2/5] remove redundant code
+
+---
+ .../eam/src/physics/rrtmg/radconstants.F90    | 36 +------------------
+ 1 file changed, 1 insertion(+), 35 deletions(-)
+
+diff --git a/components/eam/src/physics/rrtmg/radconstants.F90 b/components/eam/src/physics/rrtmg/radconstants.F90
+index db8ff58f8d6e..e5da6b54163e 100644
+--- a/components/eam/src/physics/rrtmg/radconstants.F90
++++ b/components/eam/src/physics/rrtmg/radconstants.F90
+@@ -114,7 +114,7 @@ module radconstants
+ public :: rad_gas_index
+ 
+ public :: get_number_sw_bands, &
+-          get_sw_spectral_boundaries, 
++          get_sw_spectral_boundaries, &
+           get_lw_spectral_boundaries, &
+           get_sw_spectral_midpoints, &
+           get_lw_spectral_midpoints, &
+@@ -258,40 +258,6 @@ subroutine get_sw_spectral_midpoints(band_midpoints, units)
+ end subroutine get_sw_spectral_midpoints
+       
+ 
+-subroutine get_sw_spectral_midpoints(band_midpoints, units)
+-   character(len=*), intent(in) :: units
+-   real(r8), intent(out) :: band_midpoints(nswbands)
+-   real(r8), dimension(nswbands) :: lower_bounds, upper_bounds
+-   integer :: i
+-
+-   ! Get band limits
+-   call get_sw_spectral_boundaries(lower_bounds, upper_bounds, units)
+-
+-   ! Compute band midpoints
+-   band_midpoints = 0._r8
+-   do i = 1,nswbands
+-      band_midpoints(i) = (lower_bounds(i) + upper_bounds(i)) / 2._r8
+-   end do
+-end subroutine get_sw_spectral_midpoints
+-
+-!----------------------------------------------------------------------------
+-
+-subroutine get_lw_spectral_midpoints(band_midpoints, units)
+-   character(len=*), intent(in) :: units
+-   real(r8), intent(out) :: band_midpoints(nlwbands)
+-   real(r8), dimension(nlwbands) :: lower_bounds, upper_bounds
+-   integer :: i
+-
+-   ! Get band limits
+-   call get_lw_spectral_boundaries(lower_bounds, upper_bounds, units)
+-
+-   ! Compute band midpoints
+-   band_midpoints = 0._r8
+-   do i = 1,nlwbands
+-      band_midpoints(i) = (lower_bounds(i) + upper_bounds(i)) / 2._r8
+-   end do
+-end subroutine get_lw_spectral_midpoints
+-
+ !------------------------------------------------------------------------------
+ integer function rad_gas_index(gasname)
+ 
+
+From a762b2d10f74e7f85eb6d9479f175da8ba488b11 Mon Sep 17 00:00:00 2001
+From: mahf708 <naser.mahfouz@pnnl.gov>
+Date: Tue, 21 Nov 2023 23:15:32 -0600
+Subject: [PATCH 3/5] fix missing assert, add indices, add hist coord util
+
+---
+ components/eam/src/physics/rrtmg/radiation.F90 | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/components/eam/src/physics/rrtmg/radiation.F90 b/components/eam/src/physics/rrtmg/radiation.F90
+index 5c5ec5b24ea5..aad60ea44cdc 100644
+--- a/components/eam/src/physics/rrtmg/radiation.F90
++++ b/components/eam/src/physics/rrtmg/radiation.F90
+@@ -21,6 +21,7 @@ module radiation
+ use physconst,       only: cappa
+ use time_manager,    only: get_nstep, is_first_restart_step
+ use cam_abortutils,      only: endrun
++use cam_history_support, only: add_hist_coord
+ use error_messages,  only: handle_err
+ use cam_control_mod, only: lambm0, obliqr, mvelpp, eccen
+ use iop_data_mod,    only: single_column
+@@ -1001,7 +1002,7 @@ subroutine radiation_tend(state,ptend, pbuf, &
+     logical  :: conserve_energy = .true.       ! flag to carry (QRS,QRL)*dp across time steps
+ 
+     ! Local variables from radctl
+-    integer :: i, k, iseed, ilchnk                  ! index
++    integer :: i, k, iseed, ilchnk, icol, ilay                  ! index
+     integer :: istat
+     integer :: clm_seed (pcols,kiss_seed_num)
+     real(r8) solin(pcols)         ! Solar incident flux
+@@ -1846,7 +1847,7 @@ function reordered(array_in, new_indexing) result(array_out)
+    integer :: ii
+ 
+    ! Check inputs
+-   call assert(size(array_in) == size(new_indexing), 'reorder_array: sizes inconsistent')
++   ! call assert(size(array_in) == size(new_indexing), 'reorder_array: sizes inconsistent')
+ 
+    ! Reorder array based on input index mapping, which maps old indices to new
+    do ii = 1,size(new_indexing)
+
+From 3cfd96bef73fccbd73c76d6073264e63de738e8e Mon Sep 17 00:00:00 2001
+From: mahf708 <naser.mahfouz@pnnl.gov>
+Date: Tue, 21 Nov 2023 23:30:12 -0600
+Subject: [PATCH 4/5] fix segfault due to reordering, clean up code
+
+---
+ .../eam/src/physics/rrtmg/radiation.F90       | 87 +++++++------------
+ 1 file changed, 31 insertions(+), 56 deletions(-)
+
+diff --git a/components/eam/src/physics/rrtmg/radiation.F90 b/components/eam/src/physics/rrtmg/radiation.F90
+index aad60ea44cdc..b9799babf1f4 100644
+--- a/components/eam/src/physics/rrtmg/radiation.F90
++++ b/components/eam/src/physics/rrtmg/radiation.F90
+@@ -1002,7 +1002,9 @@ subroutine radiation_tend(state,ptend, pbuf, &
+     logical  :: conserve_energy = .true.       ! flag to carry (QRS,QRL)*dp across time steps
+ 
+     ! Local variables from radctl
+-    integer :: i, k, iseed, ilchnk, icol, ilay                  ! index
++    integer :: i, k, iseed, ilchnk, icol, ilay ! index
++    integer :: ibndsw_in, ibndsw_out           ! index
++    integer :: irrtmg_to_irrtmgp               ! reorder index from rrtmgp to rrtmgp?
+     integer :: istat
+     integer :: clm_seed (pcols,kiss_seed_num)
+     real(r8) solin(pcols)         ! Solar incident flux
+@@ -1061,7 +1063,6 @@ subroutine radiation_tend(state,ptend, pbuf, &
+     real(r8) :: aer_tau_bnd_sw(pcols,0:pver,nswbands) ! aerosol extinction optical depth
+     real(r8) :: aer_ssa_bnd_sw(pcols,0:pver,nswbands) ! aerosol single scattering albedo
+     real(r8) :: aer_asm_bnd_sw(pcols,0:pver,nswbands) ! aerosol assymetry parameter
+-    real(r8) :: aer_tau_bnd_lw(pcols,0:pver,nlwbands) ! aerosol longwave optical depth
+     
+ 
+     ! Gathered indicies of day and night columns 
+@@ -1316,38 +1317,40 @@ subroutine radiation_tend(state,ptend, pbuf, &
+                   aer_tau_bnd_sw = 0._r8
+                   aer_ssa_bnd_sw = 0._r8
+                   aer_asm_bnd_sw = 0._r8
++
++                  irrtmg_to_irrtmgp = 1 ! yes, reorder index from rrtmg to rrtmgp
++
+                   ! Extract quantities from products
+                   do icol = 1,ncol
+-                     ! Copy cloud optical depth over directly
+-                     aer_tau_bnd_sw(icol,1:pver,1:nswbands) = aer_tau(icol,1:pver,1:nswbands)
+-                     ! Extract single scattering albedo from the product-defined fields
+-                     where (aer_tau(icol,1:pver,1:nswbands) > 0)
+-                        aer_ssa_bnd_sw(icol,1:pver,1:nswbands) &
+-                           = aer_tau_w(icol,1:pver,1:nswbands) / aer_tau(icol,1:pver,1:nswbands)
+-                     elsewhere
+-                        aer_ssa_bnd_sw(icol,1:pver,1:nswbands) = 1._r8
+-                     endwhere
+-                     ! Extract assymmetry parameter from the product-defined fields
+-                     where (aer_tau_w(icol,1:pver,1:nswbands) > 0)
+-                        aer_asm_bnd_sw(icol,1:pver,1:nswbands) &
+-                           = aer_tau_w_g(icol,1:pver,1:nswbands) / aer_tau_w(icol,1:pver,1:nswbands)
+-                     elsewhere
+-                        aer_asm_bnd_sw(icol,1:pver,1:nswbands) = 0._r8
+-                     endwhere
+-                  end do
+-
+-                  ! Now reorder bands to be consistent with RRTMGP
+-                  ! TODO: fix the input files themselves!
+-                  do icol = 1,size(aer_tau_bnd_sw,1)
+-                     do ilay = 1,size(aer_tau_bnd_sw,2)
+-                        aer_tau_bnd_sw(icol,ilay,:) = reordered(aer_tau_bnd_sw(icol,ilay,:), rrtmg_to_rrtmgp_swbands)
+-                        aer_ssa_bnd_sw(icol,ilay,:) = reordered(aer_ssa_bnd_sw(icol,ilay,:), rrtmg_to_rrtmgp_swbands)
+-                        aer_asm_bnd_sw(icol,ilay,:) = reordered(aer_asm_bnd_sw(icol,ilay,:), rrtmg_to_rrtmgp_swbands)
++                     do ibndsw_out = 1,nswbands
++                        ! reorder bands if desired
++                        if (irrtmg_to_irrtmgp == 1) then
++                           ibndsw_in = rrtmg_to_rrtmgp_swbands(ibndsw_out)
++                        else
++                           ibndsw_in = ibndsw_out
++                        end if
++                        ! Copy cloud optical depth over directly
++                        aer_tau_bnd_sw(icol,1:pver,ibndsw_out) = aer_tau(icol,1:pver,ibndsw_in)
++                        ! Extract single scattering albedo from the product-defined fields
++                        where (aer_tau(icol,1:pver,ibndsw_in) > 0)
++                           aer_ssa_bnd_sw(icol,1:pver,ibndsw_out) &
++                              = aer_tau_w(icol,1:pver,ibndsw_in) / aer_tau(icol,1:pver,ibndsw_in)
++                        elsewhere
++                           aer_ssa_bnd_sw(icol,1:pver,ibndsw_out) = 1._r8
++                        endwhere
++                        ! Extract assymmetry parameter from the product-defined fields
++                        where (aer_tau_w(icol,1:pver,ibndsw_in) > 0)
++                           aer_asm_bnd_sw(icol,1:pver,ibndsw_out) &
++                              = aer_tau_w_g(icol,1:pver,ibndsw_in) / aer_tau_w(icol,1:pver,ibndsw_in)
++                        elsewhere
++                           aer_asm_bnd_sw(icol,1:pver,ibndsw_out) = 0._r8
++                        endwhere
+                      end do
+                   end do
+ 
+-
++                  ! Output aerosol SW optical depth
+                   call output_aerosol_optics_sw(state, aer_tau_bnd_sw, aer_ssa_bnd_sw, aer_asm_bnd_sw)
++
+                   call t_startf ('rad_rrtmg_sw')
+                   call rad_rrtmg_sw( &
+                        lchnk,        ncol,         num_rrtmg_levs, r_state,                    &
+@@ -1831,33 +1834,5 @@ end subroutine output_aerosol_optics_lw
+ !----------------------------------------------------------------------------
+ 
+ 
+-!----------------------------------------------------------------------------
+-
+-! Utility function to reorder an array given a new indexing
+-function reordered(array_in, new_indexing) result(array_out)
+-
+-   ! Inputs
+-   real(r8), intent(in) :: array_in(:)
+-   integer, intent(in) :: new_indexing(:)
+-
+-   ! Output, reordered array
+-   real(r8), dimension(size(array_in)) :: array_out
+-
+-   ! Loop index
+-   integer :: ii
+-
+-   ! Check inputs
+-   ! call assert(size(array_in) == size(new_indexing), 'reorder_array: sizes inconsistent')
+-
+-   ! Reorder array based on input index mapping, which maps old indices to new
+-   do ii = 1,size(new_indexing)
+-      array_out(ii) = array_in(new_indexing(ii))
+-   end do
+-
+-end function reordered
+-
+-!----------------------------------------------------------------------------
+-
+-
+ end module radiation
+ 
+
+From 6e7dc35abc13e61a05351a9b45d579cab55c668c Mon Sep 17 00:00:00 2001
+From: mahf708 <naser.mahfouz@pnnl.gov>
+Date: Tue, 21 Nov 2023 23:55:30 -0600
+Subject: [PATCH 5/5] output CCN? in 1/kg units
+
+---
+ components/eam/src/physics/cam/ndrop.F90 | 18 ++++++++++++++++--
+ 1 file changed, 16 insertions(+), 2 deletions(-)
+
+diff --git a/components/eam/src/physics/cam/ndrop.F90 b/components/eam/src/physics/cam/ndrop.F90
+index b4dc999309bf..c39adab10423 100644
+--- a/components/eam/src/physics/cam/ndrop.F90
++++ b/components/eam/src/physics/cam/ndrop.F90
+@@ -58,6 +58,8 @@ module ndrop
+                        (/ 0.02_r8, 0.05_r8, 0.1_r8, 0.2_r8, 0.5_r8, 1.0_r8 /)
+ character(len=8) :: ccn_name(psat)= &
+                     (/'CCN1','CCN2','CCN3','CCN4','CCN5','CCN6'/)
++character(len=8) :: ccnm_name(psat)= &
++                    (/'CCN1M','CCN2M','CCN3M','CCN4M','CCN5M','CCN6M'/)
+ 
+ ! indices in state and pbuf structures
+ integer :: numliq_idx = -1
+@@ -274,6 +276,12 @@ subroutine ndrop_init
+    call addfld('CCN5',(/ 'lev' /), 'A','1/cm3','CCN concentration at S=0.5%')
+    call addfld('CCN6',(/ 'lev' /), 'A','1/cm3','CCN concentration at S=1.0%')
+ 
++   call addfld('CCN1M',(/ 'lev' /), 'A','1/kg','CCN concentration at S=0.02%')
++   call addfld('CCN2M',(/ 'lev' /), 'A','1/kg','CCN concentration at S=0.05%')
++   call addfld('CCN3M',(/ 'lev' /), 'A','1/kg','CCN concentration at S=0.1%')
++   call addfld('CCN4M',(/ 'lev' /), 'A','1/kg','CCN concentration at S=0.2%')
++   call addfld('CCN5M',(/ 'lev' /), 'A','1/kg','CCN concentration at S=0.5%')
++   call addfld('CCN6M',(/ 'lev' /), 'A','1/kg','CCN concentration at S=1.0%')
+ 
+    call addfld('WTKE', (/ 'lev' /), 'A', 'm/s', 'Standard deviation of updraft velocity')
+    call addfld('NDROPMIX', (/ 'lev' /), 'A', '1/kg/s', 'Droplet number mixing')
+@@ -436,6 +444,8 @@ subroutine dropmixnuc( &
+    real(r8), allocatable :: coltend(:,:)       ! column tendency for diagnostic output
+    real(r8), allocatable :: coltend_cw(:,:)    ! column tendency
+    real(r8) :: ccn(pcols,pver,psat)    ! number conc of aerosols activated at supersat
++   real(r8) :: ccnm(pcols,pver,psat)    ! mass conc of aerosols activated at supersat
++
+    integer :: ccn3d_idx  
+    real(r8), pointer :: ccn3d(:, :) 
+ 
+@@ -1105,9 +1115,10 @@ subroutine dropmixnuc( &
+    call outfld('NDROPMIX', ndropmix, pcols, lchnk)
+    call outfld('WTKE    ', wtke,     pcols, lchnk)
+ 
+-   call ccncalc(state, pbuf, cs, ccn)
++   call ccncalc(state, pbuf, cs, ccn, ccnm)
+    do l = 1, psat
+       call outfld(ccn_name(l), ccn(1,1,l), pcols, lchnk)
++      call outfld(ccnm_name(l), ccnm(1,1,l), pcols, lchnk)
+    enddo
+ 
+    if(do_aerocom_ind3) then 
+@@ -1704,7 +1715,7 @@ end subroutine maxsat
+ 
+ !===============================================================================
+ 
+-subroutine ccncalc(state, pbuf, cs, ccn)
++subroutine ccncalc(state, pbuf, cs, ccn, ccnm)
+ 
+    ! calculates number concentration of aerosols activated as CCN at
+    ! supersaturation supersat.
+@@ -1721,6 +1732,7 @@ subroutine ccncalc(state, pbuf, cs, ccn)
+ 
+    real(r8), intent(in)  :: cs(pcols,pver)       ! air density (kg/m3)
+    real(r8), intent(out) :: ccn(pcols,pver,psat) ! number conc of aerosols activated at supersat (#/m3)
++   real(r8), intent(out) :: ccnm(pcols,pver,psat) ! mass conc of aerosols activated at supersat (#/m3)
+ 
+    ! local
+ 
+@@ -1770,6 +1782,7 @@ subroutine ccncalc(state, pbuf, cs, ccn)
+    end do
+ 
+    ccn = 0._r8
++   ccnm = 0._r8
+    do k=top_lev,pver
+ 
+       do i=1,ncol
+@@ -1796,6 +1809,7 @@ subroutine ccncalc(state, pbuf, cs, ccn)
+             do i=1,ncol
+                arg(i)=argfactor(m)*log(sm(i)/super(l))
+                ccn(i,k,l)=ccn(i,k,l)+naerosol(i)*0.5_r8*(1._r8-erf(arg(i)))
++               ccnm(i,k,l)=ccn(i,k,l)/cs(i,k) ! convert from #/m3 to #/kg
+             enddo
+          enddo
+       enddo
