@@ -1,0 +1,728 @@
+From 2d0b52140d8e89433a00cdbc354741aae284d671 Mon Sep 17 00:00:00 2001
+From: mahf708 <naser.mahfouz@pnnl.gov>
+Date: Wed, 13 Dec 2023 22:51:21 -0600
+Subject: [PATCH 1/4] add p3_cld_sed to namelist
+
+---
+ components/eam/bld/build-namelist                  |  1 +
+ .../bld/namelist_files/namelist_defaults_eam.xml   |  3 +++
+ .../eam/bld/namelist_files/namelist_definition.xml |  6 ++++++
+ components/eam/src/physics/p3/eam/micro_p3.F90     | 14 ++++++++------
+ .../eam/src/physics/p3/eam/micro_p3_interface.F90  |  6 +++++-
+ 5 files changed, 23 insertions(+), 7 deletions(-)
+
+diff --git a/components/eam/bld/build-namelist b/components/eam/bld/build-namelist
+index a448608ab378..ea352b28e48b 100755
+--- a/components/eam/bld/build-namelist
++++ b/components/eam/bld/build-namelist
+@@ -3909,6 +3909,7 @@ if ($cfg->get('microphys') =~ /^p3/) {
+       add_default($nl, 'do_prescribed_CCN');
+       add_default($nl, 'do_Cooper_inP3');  
+       add_default($nl, 'p3_mincdnc'); 
++      add_default($nl, 'p3_cld_sed');
+    }
+ }
+ 
+diff --git a/components/eam/bld/namelist_files/namelist_defaults_eam.xml b/components/eam/bld/namelist_files/namelist_defaults_eam.xml
+index bc29d28ebf05..1b7fea61ce27 100755
+--- a/components/eam/bld/namelist_files/namelist_defaults_eam.xml
++++ b/components/eam/bld/namelist_files/namelist_defaults_eam.xml
+@@ -922,6 +922,7 @@
+ <micro_nicons         microphys="mg2">  0.1D6       </micro_nicons>
+ <micro_mincdnc        microphys="mg2">  -999.       </micro_mincdnc>
+ <p3_mincdnc           microphys="p3">  -999.        </p3_mincdnc> 
++<p3_cld_sed           microphys="p3">  -999.        </p3_cld_sed>
+ 
+ <!-- P3 specific namelist variables -->
+ <micro_aerosolactivation            microphys="p3"> .true.  </micro_aerosolactivation>
+@@ -953,6 +954,7 @@
+ <!-- special defaults for MMF, which now sets all other physics scheme options to "off" -->
+ <micro_mincdnc        use_MMF="1">  -999.       </micro_mincdnc>
+ <p3_mincdnc           use_MMF="1">  -999.       </p3_mincdnc> 
++<p3_cld_sed           use_MMF="1">  -999.       </p3_cld_sed>
+ 
+ <rrtmg_temp_fix                      > .false.      </rrtmg_temp_fix>
+ 
+@@ -1894,6 +1896,7 @@ with se_tstep, dt_remap_factor, dt_tracer_factor set to -1
+ <nucleate_ice_subgrid phys="default" clubb_sgs="1" microphys="p3" >1.35D0</nucleate_ice_subgrid>
+ <sscav_tuning phys="default" microphys="p3">.false.</sscav_tuning>
+ <p3_mincdnc phys="default" microphys="p3"> 20.D6      </p3_mincdnc>
++<p3_cld_sed phys="default" microphys="p3"> 1.D0       </p3_cld_sed>
+ <p3_wbf_coeff phys="default" clubb_sgs="1" microphys="p3"> 1.0      </p3_wbf_coeff>
+ <p3_nc_autocon_expon  phys="default" clubb_sgs="1" microphys="p3">  -1.10D0   </p3_nc_autocon_expon>
+ <n_so4_monolayers_pcage  phys="default" clubb_sgs="1" microphys="p3">  3.0D0   </n_so4_monolayers_pcage>
+diff --git a/components/eam/bld/namelist_files/namelist_definition.xml b/components/eam/bld/namelist_files/namelist_definition.xml
+index a79526cb7748..789801a62a22 100644
+--- a/components/eam/bld/namelist_files/namelist_definition.xml
++++ b/components/eam/bld/namelist_files/namelist_definition.xml
+@@ -2520,6 +2520,12 @@ Minimum droplet number conc (#/m3) imposed when p3_mincdnc > 0.
+ Default: -999.
+ </entry>
+ 
++<entry id="p3_cld_sed" type="real" category="microphys"
++       group="micro_nl" valid_values="" >
++Scaling cloud sedimentation
++Default: -999.
++</entry>
++
+ <entry id="micro_mg_version" type="integer" category="microphys"
+        group="micro_mg_nl" valid_values="" >
+ Version number for MG microphysics
+diff --git a/components/eam/src/physics/p3/eam/micro_p3.F90 b/components/eam/src/physics/p3/eam/micro_p3.F90
+index 33bc9c32ab94..03ed337da71a 100644
+--- a/components/eam/src/physics/p3/eam/micro_p3.F90
++++ b/components/eam/src/physics/p3/eam/micro_p3.F90
+@@ -1256,7 +1256,7 @@ end subroutine p3_main_part3
+   SUBROUTINE p3_main(qc,nc,qr,nr,th_atm,qv,dt,qi,qm,ni,bm,                                                                                                               &
+        pres,dz,nc_nuceat_tend,nccn_prescribed,ni_activated,frzimm,frzcnt,frzdep,inv_qc_relvar,it,precip_liq_surf,precip_ice_surf,its,ite,kts,kte,diag_eff_radius_qc,     &
+        diag_eff_radius_qi,rho_qi,do_predict_nc, do_prescribed_CCN,p3_autocon_coeff,p3_accret_coeff,p3_qc_autocon_expon,p3_nc_autocon_expon,p3_qc_accret_expon,           &
+-       p3_wbf_coeff,p3_mincdnc,p3_max_mean_rain_size,p3_embryonic_rain_size,                                                                                             &
++       p3_wbf_coeff,p3_mincdnc,p3_cld_sed,p3_max_mean_rain_size,p3_embryonic_rain_size,                                                                                             &
+        dpres,exner,qv2qi_depos_tend,precip_total_tend,nevapr,qr_evap_tend,precip_liq_flux,precip_ice_flux,rflx,sflx,cflx,cld_frac_r,cld_frac_l,cld_frac_i,               &
+        p3_tend_out,mu_c,lamc,liq_ice_exchange,vap_liq_exchange,                                                                                                          &
+        vap_ice_exchange,qv_prev,t_prev,col_location,diag_equiv_reflectivity,diag_ze_rain,diag_ze_ice                                                                     &
+@@ -1345,6 +1345,7 @@ SUBROUTINE p3_main(qc,nc,qr,nr,th_atm,qv,dt,qi,qm,ni,bm,
+     real(rtype), intent(in)                                     :: p3_qc_accret_expon       ! accretion qc and qr exponent
+     real(rtype), intent(in)                                     :: p3_wbf_coeff             ! WBF coefficient
+     real(rtype), intent(in)                                     :: p3_mincdnc               ! Lower bound of Nc
++    real(rtype), intent(in)                                     :: p3_cld_sed               ! Cloud sedimentation scaling
+     real(rtype), intent(in)                                     :: p3_max_mean_rain_size    ! max mean rain size allowed
+     real(rtype), intent(in)                                     :: p3_embryonic_rain_size   ! embryonic rain size from autoconversion
+ 
+@@ -1584,7 +1585,7 @@ SUBROUTINE p3_main(qc,nc,qr,nr,th_atm,qv,dt,qi,qm,ni,bm,
+        call cloud_sedimentation(kts,kte,ktop,kbot,kdir, &
+          qc_incld(i,:),rho(i,:),inv_rho(i,:),cld_frac_l(i,:),acn(i,:),inv_dz(i,:), &
+          dt,inv_dt,dnu,do_predict_nc, &
+-         qc(i,:),nc(i,:),nc_incld(i,:),mu_c(i,:),lamc(i,:),precip_liq_surf(i),cflx(i,:),p3_tend_out(i,:,36),p3_tend_out(i,:,37))
++         qc(i,:),nc(i,:),nc_incld(i,:),mu_c(i,:),lamc(i,:),precip_liq_surf(i),cflx(i,:),p3_tend_out(i,:,36),p3_tend_out(i,:,37),p3_cld_sed)
+ 
+        !------------------------------------------------------------------------------------------!
+        ! Rain sedimentation:  (adaptive substepping)
+@@ -3864,7 +3865,7 @@ end subroutine get_time_space_phys_variables
+ subroutine cloud_sedimentation(kts,kte,ktop,kbot,kdir,   &
+    qc_incld,rho,inv_rho,cld_frac_l,acn,inv_dz,&
+    dt,inv_dt,dnu,do_predict_nc, &
+-   qc, nc, nc_incld,mu_c,lamc,precip_liq_surf,cflx,qc_tend,nc_tend)
++   qc, nc, nc_incld,mu_c,lamc,precip_liq_surf,cflx,qc_tend,nc_tend,p3_cld_sed)
+ 
+    implicit none
+    integer, intent(in) :: kts, kte
+@@ -3877,6 +3878,7 @@ subroutine cloud_sedimentation(kts,kte,ktop,kbot,kdir,   &
+    real(rtype), intent(in), dimension(kts:kte) :: inv_dz
+    real(rtype), intent(in) :: dt
+    real(rtype), intent(in) :: inv_dt
++   real(rtype), intent(in) :: p3_cld_sed
+    real(rtype), dimension(:), intent(in) :: dnu
+    logical(btype), intent(in) :: do_predict_nc
+ 
+@@ -3961,8 +3963,8 @@ subroutine cloud_sedimentation(kts,kte,ktop,kbot,kdir,   &
+                   nc(k) = nc_incld(k)*cld_frac_l(k)
+ 
+                   dum = 1._rtype / bfb_pow(lamc(k), bcn)
+-                  V_qc(k) = acn(k)*bfb_gamma(4._rtype+bcn+mu_c(k))*dum/(bfb_gamma(mu_c(k)+4._rtype))
+-                  V_nc(k) = acn(k)*bfb_gamma(1._rtype+bcn+mu_c(k))*dum/(bfb_gamma(mu_c(k)+1._rtype))
++                  V_qc(k) = p3_cld_sed*acn(k)*bfb_gamma(4._rtype+bcn+mu_c(k))*dum/(bfb_gamma(mu_c(k)+4._rtype))
++                  V_nc(k) = p3_cld_sed*acn(k)*bfb_gamma(1._rtype+bcn+mu_c(k))*dum/(bfb_gamma(mu_c(k)+1._rtype))
+ 
+                endif qc_notsmall_c2
+                Co_max = max(Co_max, V_qc(k)*dt_left*inv_dz(k))
+@@ -3999,7 +4001,7 @@ subroutine cloud_sedimentation(kts,kte,ktop,kbot,kdir,   &
+                   nc(k) = nc_incld(k)*cld_frac_l(k)
+ 
+                   dum = 1._rtype / bfb_pow(lamc(k), bcn)
+-                  V_qc(k) = acn(k)*bfb_gamma(4._rtype+bcn+mu_c(k))*dum/(bfb_gamma(mu_c(k)+4._rtype))
++                  V_qc(k) = p3_cld_sed*acn(k)*bfb_gamma(4._rtype+bcn+mu_c(k))*dum/(bfb_gamma(mu_c(k)+4._rtype))
+                endif qc_notsmall_c1
+ 
+                Co_max = max(Co_max, V_qc(k)*dt_left*inv_dz(k))
+diff --git a/components/eam/src/physics/p3/eam/micro_p3_interface.F90 b/components/eam/src/physics/p3/eam/micro_p3_interface.F90
+index 9d53e95fc17f..7347a5e0e47d 100644
+--- a/components/eam/src/physics/p3/eam/micro_p3_interface.F90
++++ b/components/eam/src/physics/p3/eam/micro_p3_interface.F90
+@@ -130,6 +130,7 @@ module micro_p3_interface
+       p3_qc_accret_expon       = huge(1.0_rtype), &
+       p3_wbf_coeff             = huge(1.0_rtype), &
+       p3_mincdnc               = huge(1.0_rtype), & 
++      p3_cld_sed               = huge(1.0_rtype), &
+       p3_max_mean_rain_size    = huge(1.0_rtype), &
+       p3_embryonic_rain_size   = huge(1.0_rtype)
+    
+@@ -165,7 +166,7 @@ subroutine micro_p3_readnl(nlfile)
+        micro_p3_tableversion, micro_p3_lookup_dir, micro_aerosolactivation, micro_subgrid_cloud, &
+        micro_tend_output, p3_autocon_coeff, p3_qc_autocon_expon, p3_nc_autocon_expon, p3_accret_coeff, &
+        p3_qc_accret_expon, p3_wbf_coeff, p3_max_mean_rain_size, p3_embryonic_rain_size, &
+-       do_prescribed_CCN, do_Cooper_inP3, p3_mincdnc 
++       do_prescribed_CCN, do_Cooper_inP3, p3_mincdnc, p3_cld_sed
+ 
+   !-----------------------------------------------------------------------------
+ 
+@@ -195,6 +196,7 @@ subroutine micro_p3_readnl(nlfile)
+      write(iulog,'(A30,1x,8e12.4)') 'p3_qc_accret_expon',      p3_qc_accret_expon
+      write(iulog,'(A30,1x,8e12.4)') 'p3_wbf_coeff',            p3_wbf_coeff
+      write(iulog,'(A30,1x,8e12.4)') 'p3_mincdnc',              p3_mincdnc 
++     write(iulog,'(A30,1x,8e12.4)') 'p3_cld_sed',              p3_cld_sed
+      write(iulog,'(A30,1x,8e12.4)') 'p3_max_mean_rain_size',   p3_max_mean_rain_size
+      write(iulog,'(A30,1x,8e12.4)') 'p3_embryonic_rain_size',  p3_embryonic_rain_size
+      write(iulog,'(A30,1x,L)')    'do_prescribed_CCN: ',       do_prescribed_CCN
+@@ -216,6 +218,7 @@ subroutine micro_p3_readnl(nlfile)
+   call mpibcast(p3_qc_accret_expon,      1 ,                         mpir8,   0, mpicom)
+   call mpibcast(p3_wbf_coeff,            1 ,                         mpir8,   0, mpicom)
+   call mpibcast(p3_mincdnc,              1 ,                         mpir8,   0, mpicom) 
++  call mpibcast(p3_cld_sed,              1 ,                         mpir8,   0, mpicom)
+   call mpibcast(p3_max_mean_rain_size,   1 ,                         mpir8,   0, mpicom)
+   call mpibcast(p3_embryonic_rain_size,  1 ,                         mpir8,   0, mpicom)
+   call mpibcast(do_prescribed_CCN,       1,                          mpilog,  0, mpicom)
+@@ -1337,6 +1340,7 @@ subroutine micro_p3_tend(state, ptend, dtime, pbuf)
+          p3_qc_accret_expon,          & ! IN  autoconversion coefficient
+          p3_wbf_coeff,                & ! IN  WBF process coefficient
+          p3_mincdnc,                  & ! IN  imposing minimal Nc 
++         p3_cld_sed,                  & ! IN  cloud sedimentation scaling
+          p3_max_mean_rain_size,       & ! IN  max mean rain size
+          p3_embryonic_rain_size,      & ! IN  embryonic rain size for autoconversion
+          ! AaronDonahue new stuff
+
+From f638bd25fa9a28722004337cc9f3d2a3ae1233e3 Mon Sep 17 00:00:00 2001
+From: mahf708 <naser.mahfouz@pnnl.gov>
+Date: Wed, 13 Dec 2023 23:06:52 -0600
+Subject: [PATCH 2/4] add zm autoconv params to namelist
+
+---
+ components/eam/bld/build-namelist                    |  2 ++
+ .../eam/bld/namelist_files/namelist_defaults_eam.xml |  2 ++
+ .../eam/bld/namelist_files/namelist_definition.xml   | 12 ++++++++++++
+ components/eam/src/physics/cam/zm_conv.F90           | 11 ++++++++++-
+ components/eam/src/physics/cam/zm_microphysics.F90   |  8 +++++---
+ 5 files changed, 31 insertions(+), 4 deletions(-)
+
+diff --git a/components/eam/bld/build-namelist b/components/eam/bld/build-namelist
+index ea352b28e48b..eebfbdfeb544 100755
+--- a/components/eam/bld/build-namelist
++++ b/components/eam/bld/build-namelist
+@@ -4028,6 +4028,8 @@ add_default($nl, 'zmconv_microp');
+ add_default($nl, 'zmconv_clos_dyn_adj');
+ add_default($nl, 'zmconv_tpert_fix');
+ add_default($nl, 'zmconv_auto_fac');
++add_default($nl, 'zmconv_autocon_coeff');
++add_default($nl, 'zmconv_nc_autocon_expon');
+ add_default($nl, 'zmconv_accr_fac');
+ add_default($nl, 'zmconv_micro_dcs');
+ add_default($nl, 'zmconv_MCSP_heat_coeff');
+diff --git a/components/eam/bld/namelist_files/namelist_defaults_eam.xml b/components/eam/bld/namelist_files/namelist_defaults_eam.xml
+index 1b7fea61ce27..5385d1f95e67 100755
+--- a/components/eam/bld/namelist_files/namelist_defaults_eam.xml
++++ b/components/eam/bld/namelist_files/namelist_defaults_eam.xml
+@@ -1245,6 +1245,8 @@
+ <zmconv_clos_dyn_adj                                                  >.false. </zmconv_clos_dyn_adj>
+ <zmconv_tpert_fix                                                     >.false. </zmconv_tpert_fix>
+ <zmconv_auto_fac                                                      >7.0D0 </zmconv_auto_fac>
++<zmconv_autocon_coeff                                                 >30500.D0</zmconv_autocon_coeff>
++<zmconv_nc_autocon_expon                                              >-1.2D0  </zmconv_nc_autocon_expon>
+ <zmconv_accr_fac                                                      >1.5D0 </zmconv_accr_fac>
+ <zmconv_micro_dcs                                                     >150.E-6</zmconv_micro_dcs>
+ <!-- MCSP -->
+diff --git a/components/eam/bld/namelist_files/namelist_definition.xml b/components/eam/bld/namelist_files/namelist_definition.xml
+index 789801a62a22..c010f8092d29 100644
+--- a/components/eam/bld/namelist_files/namelist_definition.xml
++++ b/components/eam/bld/namelist_files/namelist_definition.xml
+@@ -2965,6 +2965,18 @@ cloud droplet-rain autoconversion enhancement factor in convective microphysics
+ Default: set by build-namelist  
+ </entry>
+ 
++<entry id="zmconv_autocon_coeff" type="real" category="conv"
++       group="zmconv_nl" valid_values="" >    
++cloud droplet-rain autoconversion linear prefactor convective microphysics scheme.
++Default: set by build-namelist  
++</entry>
++
++<entry id="zmconv_nc_autocon_expon" type="real" category="conv"
++       group="zmconv_nl" valid_values="" >    
++cloud droplet-rain autoconversion Nc exponent in convective microphysics scheme.
++Default: set by build-namelist  
++</entry>
++
+ <entry id="zmconv_accr_fac" type="real" category="conv"
+        group="zmconv_nl" valid_values="" >    
+ cloud droplet-rain accretion enhancement factor in convective microphysics scheme.      
+diff --git a/components/eam/src/physics/cam/zm_conv.F90 b/components/eam/src/physics/cam/zm_conv.F90
+index c330808bf330..4fc9e7ebf5e6 100644
+--- a/components/eam/src/physics/cam/zm_conv.F90
++++ b/components/eam/src/physics/cam/zm_conv.F90
+@@ -77,6 +77,8 @@ module zm_conv
+    integer  :: zmconv_mx_bot_lyr_adj = unset_int
+    real(r8) :: zmconv_tp_fac         = unset_r8
+    real(r8) :: zmconv_auto_fac       = unset_r8
++   real(r8) :: zmconv_autocon_coeff    = unset_r8
++   real(r8) :: zmconv_nc_autocon_expon = unset_r8
+    real(r8) :: zmconv_accr_fac       = unset_r8
+    real(r8) :: zmconv_micro_dcs      = unset_r8
+    real(r8) :: zmconv_MCSP_heat_coeff = 0._r8
+@@ -129,6 +131,8 @@ module zm_conv
+ 
+    real(r8) :: tp_fac = unset_r8  
+    real(r8) :: auto_fac = unset_r8
++   real(r8) :: autocon_coeff = unset_r8
++   real(r8) :: nc_autocon_expon = unset_r8
+    real(r8) :: accr_fac = unset_r8
+    real(r8) :: micro_dcs= unset_r8
+ 
+@@ -156,6 +160,7 @@ subroutine zmconv_readnl(nlfile)
+            zmconv_dmpdz, zmconv_alfa, zmconv_tiedke_add,     &
+            zmconv_cape_cin, zmconv_mx_bot_lyr_adj, zmconv_tp_fac, zmconv_trigdcape_ull, &
+            zmconv_trig_dcape_only, zmconv_trig_ull_only, zmconv_microp, zmconv_auto_fac,&
++           zmconv_autocon_coeff, zmconv_nc_autocon_expon,                               &
+            zmconv_accr_fac, zmconv_micro_dcs, zmconv_clos_dyn_adj, zmconv_tpert_fix,    &
+            zmconv_MCSP_heat_coeff, zmconv_MCSP_moisture_coeff, &
+            zmconv_MCSP_uwind_coeff, zmconv_MCSP_vwind_coeff   
+@@ -192,6 +197,8 @@ subroutine zmconv_readnl(nlfile)
+       dmpdz            = zmconv_dmpdz
+       tp_fac           = zmconv_tp_fac
+       auto_fac         = zmconv_auto_fac
++      autocon_coeff    = zmconv_autocon_coeff
++      nc_autocon_expon = zmconv_nc_autocon_expon
+       accr_fac         = zmconv_accr_fac
+       micro_dcs        = zmconv_micro_dcs
+       MCSP_heat_coeff  = zmconv_MCSP_heat_coeff
+@@ -259,6 +266,8 @@ subroutine zmconv_readnl(nlfile)
+    call mpibcast(mx_bot_lyr_adj,    1, mpiint, 0, mpicom)
+    call mpibcast(tp_fac,            1, mpir8,  0, mpicom)
+    call mpibcast(auto_fac,          1, mpir8,  0, mpicom)
++   call mpibcast(autocon_coeff,     1, mpir8,  0, mpicom)
++   call mpibcast(nc_autocon_expon,  1, mpir8,  0, mpicom)
+    call mpibcast(accr_fac,          1, mpir8,  0, mpicom)
+    call mpibcast(micro_dcs,         1, mpir8,  0, mpicom)  
+    call mpibcast(MCSP,              1, mpilog, 0, mpicom)
+@@ -3524,7 +3533,7 @@ subroutine cldprp(lchnk   , &
+                     loc_microp_st%accsirn,loc_microp_st%accgln ,loc_microp_st%accgrn ,loc_microp_st%accilm , &
+                     loc_microp_st%acciln ,loc_microp_st%fallrm ,loc_microp_st%fallsm ,loc_microp_st%fallgm , &
+                     loc_microp_st%fallrn ,loc_microp_st%fallsn ,loc_microp_st%fallgn ,loc_microp_st%fhmrm  , &
+-                    dsfm,   dsfn, auto_fac, accr_fac, micro_dcs) 
++                    dsfm,   dsfn, auto_fac, autocon_coeff, nc_autocon_expon, accr_fac, micro_dcs) 
+ 
+ 
+       do k = pver,msg + 2,-1
+diff --git a/components/eam/src/physics/cam/zm_microphysics.F90 b/components/eam/src/physics/cam/zm_microphysics.F90
+index a4555a20001a..c2434fc81d07 100755
+--- a/components/eam/src/physics/cam/zm_microphysics.F90
++++ b/components/eam/src/physics/cam/zm_microphysics.F90
+@@ -376,7 +376,7 @@ subroutine zm_mphy(su,    qu,   mu,   du,   eu,    cmel,  cmei,  zf,   pm,   te,
+                    accgrm, accglm, accgslm,accgsrm,accgirm,accgrim,accgrsm,accgsln,accgsrn,   &
+                    accgirn,accsrim,acciglm,accigrm,accsirm,accigln,accigrn,accsirn,accgln,    &
+                    accgrn ,accilm, acciln ,fallrm ,fallsm ,fallgm ,fallrn ,fallsn ,fallgn,    &
+-                   fhmrm  ,dsfm, dsfn, auto_fac, accr_fac, dcs)
++                   fhmrm  ,dsfm, dsfn, auto_fac, autocon_coeff, nc_autocon_expon, accr_fac, dcs)
+    
+ 
+ ! Purpose:
+@@ -418,6 +418,8 @@ subroutine zm_mphy(su,    qu,   mu,   du,   eu,    cmel,  cmei,  zf,   pm,   te,
+   real(r8) cp                                   ! heat capacity of dry air
+   real(r8) rd                                   ! gas constant for dry air
+   real(r8) auto_fac                             ! droplet-rain autoconversion enhancement factor  
++  real(r8) autocon_coeff                        ! droplet-rain autoconversion linear prefactor
++  real(r8) nc_autocon_expon                     ! droplet-rain autoconversion Nc exponent
+   real(r8) accr_fac                             ! droplet-rain accretion enhancement factor
+   real(r8) dcs                                  ! autoconversion size threshold for cloud ice to snow (m)
+ 
+@@ -1488,8 +1490,8 @@ subroutine zm_mphy(su,    qu,   mu,   du,   eu,    cmel,  cmei,  zf,   pm,   te,
+ !                 prc(k) = 1350._r8*qcic(i,k)**2.47_r8*    &
+ !                    (ncic(i,k)/1.e6_r8*rho(i,k))**(-1.79_r8)
+                  ! parameters with updated values for 72 layer model 
+-                 prc(k) = auto_fac*30500._r8*qcic(i,k)**3.19_r8*    &
+-                    (ncic(i,k)/1.e6_r8*rho(i,k))**(-1.2_r8)
++                 prc(k) = auto_fac*autocon_coeff*qcic(i,k)**3.19_r8*    &
++                    (ncic(i,k)/1.e6_r8*rho(i,k))**(nc_autocon_expon)
+                  nprc1(k) = prc(k)/(qcic(i,k)/ncic(i,k))
+                  nprc(k) = prc(k) * (1._r8/droplet_mass_25um)
+ 
+
+From 8741a3bbc827a4ebc77babaec74988230e943c0b Mon Sep 17 00:00:00 2001
+From: mahf708 <naser.mahfouz@pnnl.gov>
+Date: Thu, 14 Dec 2023 07:40:10 -0600
+Subject: [PATCH 3/4] add htop to aerocom aie
+
+---
+ components/eam/src/physics/cam/output_aerocom_aie.F90 | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/components/eam/src/physics/cam/output_aerocom_aie.F90 b/components/eam/src/physics/cam/output_aerocom_aie.F90
+index 7257073f0874..991b14fa599d 100644
+--- a/components/eam/src/physics/cam/output_aerocom_aie.F90
++++ b/components/eam/src/physics/cam/output_aerocom_aie.F90
+@@ -49,6 +49,7 @@ module output_aerocom_aie
+    integer :: ccn_idx      ! cloud condensation nuclei number concentration for liquid water
+                                        ! clouds where activation corresponding to CDR and CDN
+    integer :: ttop_idx     ! Temperature at top of clouds (K)
++   integer :: htop_idx     ! Height at top of clouds (m)
+    integer :: ptop_idx     ! Pressure at top fo clouds (Pa)
+    integer :: autoconv_idx      ! Column-integrated autoconversion rate
+    integer :: accretn_idx      ! Column-integrated autoconversion rate
+@@ -97,6 +98,7 @@ subroutine  output_aerocom_aie_register ()
+    call pbuf_add_field('cod',  'physpkg', dtype_r8, (/pcols/),      cod_idx)
+    call pbuf_add_field('ccn',  'physpkg', dtype_r8, (/pcols/),      ccn_idx)
+    call pbuf_add_field('ttop', 'physpkg', dtype_r8, (/pcols/),      ttop_idx)
++   call pbuf_add_field('htop', 'physpkg', dtype_r8, (/pcols/),      htop_idx)
+    call pbuf_add_field('ptop', 'physpkg', dtype_r8, (/pcols/),      ptop_idx)
+ 
+    call pbuf_add_field('autoconv', 'physpkg', dtype_r8, (/pcols/),      autoconv_idx)
+@@ -154,6 +156,7 @@ subroutine  output_aerocom_aie_init ()
+    call addfld ('ccn', horiz_only ,'A'    ,   '#/m3',    &
+                'CCN number concentration at 0.3% at the top layer of liquid water clouds',  flag_xyfill=.true.)
+    call addfld ('ttop', horiz_only ,'A'    ,  'K',      'Temperature at top of clouds',  flag_xyfill=.true.)
++   call addfld ('htop', horiz_only ,'A'    ,  'm',      'Height at top of clouds',  flag_xyfill=.true.)
+    call addfld ('ptop', horiz_only ,'A'    ,  'Pa',      'Pressure at top of clouds',  flag_xyfill=.true.)
+    call addfld ('autoconv', horiz_only ,'A'    ,  'kg/m2/s',   'Grid-mean surface precipitation rate',  flag_xyfill=.true.)
+    call addfld ('accretn', horiz_only ,'A'    ,  'kg/m2/s',    'Grid-mean surface precipitation rate',  flag_xyfill=.true.)
+@@ -258,6 +261,7 @@ subroutine cloud_top_aerocom(state, pbuf)
+    real(r8), pointer, dimension(:) ::  icc
+    real(r8), pointer, dimension(:) ::  lcc
+    real(r8), pointer, dimension(:) ::  ttop 
++   real(r8), pointer, dimension(:) ::  htop
+    real(r8), pointer, dimension(:) ::  ptop
+    real(r8), pointer, dimension(:) ::  cdr 
+    real(r8), pointer, dimension(:) ::  icr
+@@ -330,6 +334,7 @@ subroutine cloud_top_aerocom(state, pbuf)
+    call pbuf_get_field(pbuf, icc_idx, icc)
+    call pbuf_get_field(pbuf, lcc_idx, lcc)
+    call pbuf_get_field(pbuf, ttop_idx, ttop)
++   call pbuf_get_field(pbuf, htop_idx, htop)
+    call pbuf_get_field(pbuf, ptop_idx, ptop)
+    call pbuf_get_field(pbuf, cdr_idx, cdr)
+    call pbuf_get_field(pbuf, icr_idx, icr)
+@@ -372,6 +377,7 @@ subroutine cloud_top_aerocom(state, pbuf)
+    icc(:) = 0.0_r8
+    lcc(:) = 0.0_r8
+    ttop(:) = 0.0_r8
++   htop(:) = 0.0_r8
+    ptop(:) = 0.0_r8
+    cdr(:) = 0.0_r8
+    icr(:) = 0.0_r8
+@@ -415,6 +421,7 @@ subroutine cloud_top_aerocom(state, pbuf)
+         endif 
+ 
+         ttop(i) = ttop(i) + state%t(i,k) * ( clt(i) - ftmp(i) )*flag_max 
++        htop(i) = htop(i) + state%t(i,k) * ( clt(i) - ftmp(i) )*flag_max 
+         ptop(i) = ptop(i) + state%pmid(i,k) *( clt(i) - ftmp(i) )*flag_max
+ 
+         if(cldice(i,k).gt.1.0e-8) then
+@@ -459,9 +466,11 @@ subroutine cloud_top_aerocom(state, pbuf)
+     end if 
+ !    if ( clt(i).le.thres_cld) then
+ !      ttop(i) = fillvalue
++!      htop(i) = fillvalue
+ !      ptop(i) = fillvalue
+ !    else 
+ !      ttop(i) = ttop(i)/clt(i)
++!      htop(i) = htop(i)/clt(i)
+ !      ptop(i) = ptop(i)/clt(i)
+ !    end if
+ !    if (lcc(i).le.thres_cld) then
+@@ -562,6 +571,7 @@ subroutine cloud_top_aerocom(state, pbuf)
+    call outfld('ccn', ccn, pcols, lchnk)
+    call outfld('ptop', ptop, pcols, lchnk)
+    call outfld('ttop', ttop, pcols, lchnk)
++   call outfld('htop', htop, pcols, lchnk)
+    call outfld('intccn', intccn, pcols, lchnk)
+    call outfld('colrv', colrv, pcols, lchnk)
+    call outfld('rwp', rwp, pcols, lchnk)
+
+From 355cc8b7c8c044500fe6e4e545e08c574edfd7df Mon Sep 17 00:00:00 2001
+From: mahf708 <naser.mahfouz@pnnl.gov>
+Date: Thu, 14 Dec 2023 08:47:17 -0600
+Subject: [PATCH 4/4] add new outputs to aerocom aie
+
+---
+ .../src/physics/cam/output_aerocom_aie.F90    | 121 ++++++++++++++++++
+ 1 file changed, 121 insertions(+)
+
+diff --git a/components/eam/src/physics/cam/output_aerocom_aie.F90 b/components/eam/src/physics/cam/output_aerocom_aie.F90
+index 991b14fa599d..c6f445f83721 100644
+--- a/components/eam/src/physics/cam/output_aerocom_aie.F90
++++ b/components/eam/src/physics/cam/output_aerocom_aie.F90
+@@ -36,25 +36,36 @@ module output_aerocom_aie
+ !  variable index for pbuf
+    integer :: angstrm_idx   ! Angstrom coefficients
+    integer :: cdr_idx      ! droplet effective radius at top of liquid water clouds (meter)
++   integer :: cdr2_idx      ! droplet effective radius at top of liquid water clouds (meter)
+    integer :: cdnc_idx     ! droplet number concentration in top layer of liquid water clouds (#/m3)
++   integer :: cdnc2_idx     ! droplet number concentration in top layer of liquid water clouds (#/m3)
+    integer :: cdnum_idx    ! column-integrated droplet number concentrations
+    integer :: icnum_idx    ! column-integrated ice crystal number concentrations
+    integer :: clt_idx      ! fractional cover by all clouds
++   integer :: clt2_idx      ! fractional cover by all clouds
+    integer :: lcc_idx      ! fractional cover by liquid water clouds
++   integer :: lcc2_idx      ! fractional cover by liquid water clouds
+    integer :: lwp_idx      ! in-cloud liquid water path for liquid clouds (kg/m^2)
+    integer :: iwp_idx      !  in-cloud ice water path for ice clouds (kg/m^2)
+    integer :: icr_idx      ! effective radius of crystals at top of ice clouds (meter)
++   integer :: icr2_idx      ! effective radius of crystals at top of ice clouds (meter)
+    integer :: icc_idx      ! fractional cover by ice clouds
++   integer :: icc2_idx      ! fractional cover by ice clouds
+    integer :: cod_idx      ! in-cloud optical depth 
+    integer :: ccn_idx      ! cloud condensation nuclei number concentration for liquid water
++   integer :: ccn2_idx      ! cloud condensation nuclei number concentration for liquid water
+                                        ! clouds where activation corresponding to CDR and CDN
+    integer :: ttop_idx     ! Temperature at top of clouds (K)
++   integer :: ttop2_idx     ! Temperature at top of clouds (K)
+    integer :: htop_idx     ! Height at top of clouds (m)
++   integer :: htop2_idx     ! Height at top of clouds (m)
+    integer :: ptop_idx     ! Pressure at top fo clouds (Pa)
++   integer :: ptop2_idx     ! Pressure at top fo clouds (Pa)
+    integer :: autoconv_idx      ! Column-integrated autoconversion rate
+    integer :: accretn_idx      ! Column-integrated autoconversion rate
+    integer :: rh700_idx      ! relative humidity at 700 hPa
+    integer :: icnc_idx     ! ice crystal number concentration in top layer of ice clouds (#/m3)
++   integer :: icnc2_idx     ! ice crystal number concentration in top layer of ice clouds (#/m3)
+ 
+    integer :: intccn_idx   
+    integer :: colrv_idx
+@@ -86,24 +97,35 @@ subroutine  output_aerocom_aie_register ()
+ 
+    call pbuf_add_field('angstrm',  'physpkg', dtype_r8, (/pcols/),      angstrm_idx)
+    call pbuf_add_field('cdr',  'physpkg', dtype_r8, (/pcols/),      cdr_idx)
++   call pbuf_add_field('cdr2',  'physpkg', dtype_r8, (/pcols/),      cdr2_idx)
+    call pbuf_add_field('cdnc',  'physpkg', dtype_r8, (/pcols/),      cdnc_idx)
++   call pbuf_add_field('cdnc2',  'physpkg', dtype_r8, (/pcols/),      cdnc2_idx)
+    call pbuf_add_field('cdnum',  'physpkg', dtype_r8, (/pcols/),      cdnum_idx)
+    call pbuf_add_field('icnum',  'physpkg', dtype_r8, (/pcols/),      icnum_idx)
+    call pbuf_add_field('clt',  'physpkg', dtype_r8, (/pcols/),      clt_idx)
++   call pbuf_add_field('clt2',  'physpkg', dtype_r8, (/pcols/),      clt2_idx)
+    call pbuf_add_field('lcc',  'physpkg', dtype_r8, (/pcols/),      lcc_idx)
++   call pbuf_add_field('lcc2',  'physpkg', dtype_r8, (/pcols/),      lcc2_idx)
+    call pbuf_add_field('lwp',  'physpkg', dtype_r8, (/pcols/),      lwp_idx)
+    call pbuf_add_field('iwp',  'physpkg', dtype_r8, (/pcols/),      iwp_idx)
+    call pbuf_add_field('icr',  'physpkg', dtype_r8, (/pcols/),      icr_idx)
++   call pbuf_add_field('icr2',  'physpkg', dtype_r8, (/pcols/),      icr2_idx)
+    call pbuf_add_field('icc',  'physpkg', dtype_r8, (/pcols/),      icc_idx)
++   call pbuf_add_field('icc2',  'physpkg', dtype_r8, (/pcols/),      icc2_idx)
+    call pbuf_add_field('cod',  'physpkg', dtype_r8, (/pcols/),      cod_idx)
+    call pbuf_add_field('ccn',  'physpkg', dtype_r8, (/pcols/),      ccn_idx)
++   call pbuf_add_field('ccn2',  'physpkg', dtype_r8, (/pcols/),      ccn2_idx)
+    call pbuf_add_field('ttop', 'physpkg', dtype_r8, (/pcols/),      ttop_idx)
++   call pbuf_add_field('ttop2', 'physpkg', dtype_r8, (/pcols/),      ttop2_idx)
+    call pbuf_add_field('htop', 'physpkg', dtype_r8, (/pcols/),      htop_idx)
++   call pbuf_add_field('htop2', 'physpkg', dtype_r8, (/pcols/),      htop2_idx)
+    call pbuf_add_field('ptop', 'physpkg', dtype_r8, (/pcols/),      ptop_idx)
++   call pbuf_add_field('ptop2', 'physpkg', dtype_r8, (/pcols/),      ptop2_idx)
+ 
+    call pbuf_add_field('autoconv', 'physpkg', dtype_r8, (/pcols/),      autoconv_idx)
+    call pbuf_add_field('accretn', 'physpkg', dtype_r8, (/pcols/),      accretn_idx)
+    call pbuf_add_field('icnc', 'physpkg', dtype_r8, (/pcols/),      icnc_idx)
++   call pbuf_add_field('icnc2', 'physpkg', dtype_r8, (/pcols/),      icnc2_idx)
+    call pbuf_add_field('rh700', 'physpkg', dtype_r8, (/pcols/),      rh700_idx)
+ 
+    call pbuf_add_field('intccn', 'physpkg', dtype_r8, (/pcols/),      intccn_idx)
+@@ -138,30 +160,46 @@ subroutine  output_aerocom_aie_init ()
+    call addfld ('aerindex', horiz_only ,'A' ,  '#', 'Aerosol Index (Angstrom coefficient * AOD)', flag_xyfill=.true.)
+    call addfld ('cdr', horiz_only  ,'A'   ,   'meter', &
+                'Grid-cell mean droplet effective radius at top of liquid water clouds',  flag_xyfill=.true.)
++   call addfld ('cdr2', horiz_only  ,'A'   ,   'meter', &
++               'Grid-cell mean droplet effective radius at top of liquid water clouds',  flag_xyfill=.true.)
+    call addfld ('cdnc', horiz_only ,'A'    ,  '#/m3', &
+                'Grid-cell mean droplet number concentration at top of liquid water clouds',  flag_xyfill=.true.)
++   call addfld ('cdnc2', horiz_only ,'A'    ,  '#/m3', &
++               'Grid-cell mean droplet number concentration at top of liquid water clouds',  flag_xyfill=.true.)
+    call addfld ('cdnum', horiz_only ,'A'    ,  '#/m2', &
+                'Grid-cell mean column-integrated droplet number concentrations',  flag_xyfill=.true.)
+    call addfld ('icnum', horiz_only ,'A'    ,  '#/m2',  &
+                'Grid-cell mean column-integrated ice crystal number concentrations',  flag_xyfill=.true.)
+    call addfld ('clt', horiz_only ,'A'    ,   'fraction','Fractional cover by all clouds',   flag_xyfill=.true.) 
++   call addfld ('clt2', horiz_only ,'A'    ,   'fraction','Fractional cover by all clouds',   flag_xyfill=.true.) 
+    call addfld ('lcc', horiz_only ,'A'    ,   'fraction','Fractional cover by liquid water clouds',   flag_xyfill=.true.)
++   call addfld ('lcc2', horiz_only ,'A'    ,   'fraction','Fractional cover by liquid water clouds',   flag_xyfill=.true.)
+    call addfld ('lwp', horiz_only ,'A'    ,   'kg/m2',  &
+                'Grid-cell mean liquid water path for liquid water clouds',  flag_xyfill=.true.)
+    call addfld ('iwp', horiz_only ,'A'    ,   'kg/m2',  'Grid-cell mean ice water path for ice clouds',  flag_xyfill=.true.)
+    call addfld ('icr', horiz_only ,'A'    ,   'meter',  &
+                'Grid-cell mean effective radius of crystals at top of ice clouds',  flag_xyfill=.true.)
++   call addfld ('icr2', horiz_only ,'A'    ,   'meter',  &
++               'Grid-cell mean effective radius of crystals at top of ice clouds',  flag_xyfill=.true.)
+    call addfld ('icc', horiz_only ,'A'    ,   'fracton','Fractional cover by ice clouds',  flag_xyfill=.true.)
++   call addfld ('icc2', horiz_only ,'A'    ,   'fracton','Fractional cover by ice clouds',  flag_xyfill=.true.)
+    call addfld ('cod', horiz_only ,'A'    ,   'amount',  'Grid-cell mean cloud optical depth',  flag_xyfill=.true.)
+    call addfld ('ccn', horiz_only ,'A'    ,   '#/m3',    &
+                'CCN number concentration at 0.3% at the top layer of liquid water clouds',  flag_xyfill=.true.)
++   call addfld ('ccn2', horiz_only ,'A'    ,   '#/m3',    &
++               'CCN number concentration at 0.3% at the top layer of liquid water clouds',  flag_xyfill=.true.)
+    call addfld ('ttop', horiz_only ,'A'    ,  'K',      'Temperature at top of clouds',  flag_xyfill=.true.)
++   call addfld ('ttop2', horiz_only ,'A'    ,  'K',      'Temperature at top of clouds',  flag_xyfill=.true.)
+    call addfld ('htop', horiz_only ,'A'    ,  'm',      'Height at top of clouds',  flag_xyfill=.true.)
++   call addfld ('htop2', horiz_only ,'A'    ,  'm',      'Height at top of clouds',  flag_xyfill=.true.)
+    call addfld ('ptop', horiz_only ,'A'    ,  'Pa',      'Pressure at top of clouds',  flag_xyfill=.true.)
++   call addfld ('ptop2', horiz_only ,'A'    ,  'Pa',      'Pressure at top of clouds',  flag_xyfill=.true.)
+    call addfld ('autoconv', horiz_only ,'A'    ,  'kg/m2/s',   'Grid-mean surface precipitation rate',  flag_xyfill=.true.)
+    call addfld ('accretn', horiz_only ,'A'    ,  'kg/m2/s',    'Grid-mean surface precipitation rate',  flag_xyfill=.true.)
+    call addfld ('icnc', horiz_only ,'A'    ,  '#/m3',   &
+                'Ice crystal number concentration at top of ice clouds',  flag_xyfill=.true.)
++   call addfld ('icnc2', horiz_only ,'A'    ,  '#/m3',   &
++               'Ice crystal number concentration at top of ice clouds',  flag_xyfill=.true.)
+    call addfld ('rh700', horiz_only ,'A'    , 'fraction', 'Relative humidity at 700 hPa',  flag_xyfill=.true.)
+ 
+    call addfld ('rwp', horiz_only ,'A'    , 'kg/m2',  'Rain water path',  flag_xyfill=.true.)
+@@ -258,16 +296,27 @@ subroutine cloud_top_aerocom(state, pbuf)
+    real(r8), pointer, dimension(:, :) :: qrain  ! grid-mean rain water mixing ratio
+ 
+    real(r8), pointer, dimension(:) ::  clt 
++   real(r8), pointer, dimension(:) ::  clt2 
+    real(r8), pointer, dimension(:) ::  icc
++   real(r8), pointer, dimension(:) ::  icc2
+    real(r8), pointer, dimension(:) ::  lcc
++   real(r8), pointer, dimension(:) ::  lcc2
+    real(r8), pointer, dimension(:) ::  ttop 
++   real(r8), pointer, dimension(:) ::  ttop2
+    real(r8), pointer, dimension(:) ::  htop
++   real(r8), pointer, dimension(:) ::  htop2
+    real(r8), pointer, dimension(:) ::  ptop
++   real(r8), pointer, dimension(:) ::  ptop2
+    real(r8), pointer, dimension(:) ::  cdr 
++   real(r8), pointer, dimension(:) ::  cdr2
+    real(r8), pointer, dimension(:) ::  icr
++   real(r8), pointer, dimension(:) ::  icr2
+    real(r8), pointer, dimension(:) ::  cdnc 
++   real(r8), pointer, dimension(:) ::  cdnc2
+    real(r8), pointer, dimension(:) ::  icnc 
++   real(r8), pointer, dimension(:) ::  icnc2
+    real(r8), pointer, dimension(:) ::  ccn
++   real(r8), pointer, dimension(:) ::  ccn2
+ 
+    real(r8), pointer, dimension(:) :: cod
+    real(r8), pointer, dimension(:) :: lwp
+@@ -291,6 +340,7 @@ subroutine cloud_top_aerocom(state, pbuf)
+ 
+ 
+    real(r8) :: ftmp(pcols)
++   real(r8) :: ftmp2(pcols)
+    real(r8) :: zi(pver+1) 
+    real(r8) :: flag_max 
+    real(r8) :: thres_cld, thres_cod, thres_cwp, max_cld, fr, cwp
+@@ -331,16 +381,27 @@ subroutine cloud_top_aerocom(state, pbuf)
+    call pbuf_get_field(pbuf, numicebf_idx, numicebf)
+ 
+    call pbuf_get_field(pbuf, clt_idx, clt)
++   call pbuf_get_field(pbuf, clt2_idx, clt2)
+    call pbuf_get_field(pbuf, icc_idx, icc)
++   call pbuf_get_field(pbuf, icc2_idx, icc2)
+    call pbuf_get_field(pbuf, lcc_idx, lcc)
++   call pbuf_get_field(pbuf, lcc2_idx, lcc2)
+    call pbuf_get_field(pbuf, ttop_idx, ttop)
++   call pbuf_get_field(pbuf, ttop2_idx, ttop2)
+    call pbuf_get_field(pbuf, htop_idx, htop)
++   call pbuf_get_field(pbuf, htop2_idx, htop2)
+    call pbuf_get_field(pbuf, ptop_idx, ptop)
++   call pbuf_get_field(pbuf, ptop2_idx, ptop2)
+    call pbuf_get_field(pbuf, cdr_idx, cdr)
++   call pbuf_get_field(pbuf, cdr2_idx, cdr2)
+    call pbuf_get_field(pbuf, icr_idx, icr)
++   call pbuf_get_field(pbuf, icr2_idx, icr2)
+    call pbuf_get_field(pbuf, cdnc_idx, cdnc)
++   call pbuf_get_field(pbuf, cdnc2_idx, cdnc2)
+    call pbuf_get_field(pbuf, icnc_idx, icnc)
++   call pbuf_get_field(pbuf, icnc2_idx, icnc2)
+    call pbuf_get_field(pbuf, ccn_idx, ccn)
++   call pbuf_get_field(pbuf, ccn2_idx, ccn2)
+    call pbuf_get_field(pbuf, cod_idx, cod)
+    call pbuf_get_field(pbuf, lwp_idx, lwp)
+    call pbuf_get_field(pbuf, iwp_idx, iwp)
+@@ -371,22 +432,71 @@ subroutine cloud_top_aerocom(state, pbuf)
+    cld(:, :) = cldo(:, :)
+    if ( iovl.eq.2 .or.iovl.eq.3 ) then 
+     clt(:) = 1._r8
++    clt2(:) = 1._r8
+    else 
+     clt(:) = 0.0_r8
++    clt2(:) = 0.0_r8
+    end if 
+    icc(:) = 0.0_r8
++   icc2(:) = 0.0_r8
+    lcc(:) = 0.0_r8
++   lcc2(:) = 0.0_r8
+    ttop(:) = 0.0_r8
++   ttop2(:) = 0.0_r8
+    htop(:) = 0.0_r8
++   htop2(:) = 0.0_r8
+    ptop(:) = 0.0_r8
++   ptop2(:) = 0.0_r8
+    cdr(:) = 0.0_r8
++   cdr2(:) = 0.0_r8
+    icr(:) = 0.0_r8
++   icr2(:) = 0.0_r8
+    cdnc(:) = 0.0_r8
++   cdnc2(:) = 0.0_r8
+    icnc(:) = 0.0_r8
++   icnc2(:) = 0.0_r8
+    ccn(:) = 0.0_r8
++   ccn2(:) = 0.0_r8
+    lwp2(:) = 0.0_r8
+    iwp2(:) = 0.0_r8
+ 
++   if ( iovl == 3 ) then
++      do i=1, ncol
++         do k=2, pver
++            ! cloud water content (liq and ice)
++            cwp =  ( cldliq(i,k) + cldice(i,k) ) * state%pdel(i,k)/gravit
++            if ( cwp > 0.0 .and. cld(i,k) > thres_cld ) then
++
++               fr =  ( 1._r8 - max( cld(i,k-1), cld(i,k) ) ) / &
++                     ( 1._r8 - min( cld(i,k-1), 1._r8 - thres_cld ) )
++
++               ftmp2(i) = clt2(i) * fr
++
++               ttop2(i) = ttop2(i) + state%t(i,k) * ( clt2(i) - ftmp2(i) ) 
++               htop2(i) = htop2(i) + state%t(i,k) * ( clt2(i) - ftmp2(i) ) 
++               ptop2(i) = ptop2(i) + state%pmid(i,k) * ( clt2(i) - ftmp2(i) )
++
++               lphase = cldliq(i,k) / ( cldliq(i,k) + cldice(i,k) )
++               iphase = 1.0_r8 - lphase
++
++               ! ice clouds
++               icr2(i) = icr2(i) + rei(i,k) * iphase * ( clt2(i) - ftmp2(i) ) * 1.0e-6  ! um --> m
++               icc2(i) = icc2(i) + iphase * ( clt2(i) - ftmp2(i) )
++               icnc2(i) = icnc2(i) + ind(i,k) * iphase * ( clt2(i) - ftmp2(i) )
++      
++               ! liquid water clouds
++               cdr2(i) = cdr2(i) + rel(i,k) * lphase * ( clt2(i) - ftmp2(i) )  * 1.0e-6  ! um -> m
++               cdnc2(i) = cdnc2(i) + lnd(i,k) * lphase * ( clt2(i) - ftmp2(i) ) 
++               ccn2(i)  = ccn2(i) + ccn3d(i,k) * lphase * ( clt2(i) - ftmp2(i)) * 1.0e6  ! #/cm3 --> #/m3
++               lcc2(i) = lcc2(i) + lphase * ( clt2(i) - ftmp2(i) )
++
++               clt2(i) = ftmp2(i)
++            end if ! cwp > 0 and cld(i,k) > thres_cld
++         end do ! k=2, pver
++         clt2(i) = 1._r8 - clt2(i)
++      end do ! i=1, ncol
++   end if ! iovl == 3
++
+    do i=1, ncol
+     do k=2, pver ! assumption: uppermost layer is cloud-free (k=1)
+        cwp =  (cldliq(i,k)+cldice(i,k)) * state%pdel(i,k)/gravit 
+@@ -557,21 +667,32 @@ subroutine cloud_top_aerocom(state, pbuf)
+    end do
+ 
+    call outfld('cdr', cdr, pcols, lchnk) 
++   call outfld('cdr2', cdr2, pcols, lchnk) 
+    call outfld('cdnc', cdnc, pcols, lchnk)
++   call outfld('cdnc2', cdnc2, pcols, lchnk)
+    call outfld('cdnum', cdnum, pcols, lchnk)
+    call outfld('icnum', icnum, pcols, lchnk)
+    call outfld('clt', clt, pcols, lchnk)
++   call outfld('clt2', clt2, pcols, lchnk)
+    call outfld('lcc', lcc, pcols, lchnk)
++   call outfld('lcc2', lcc2, pcols, lchnk)
+    call outfld('lwp', lwp, pcols, lchnk)
+    call outfld('iwp', iwp, pcols, lchnk)
+    call outfld('icc', icc, pcols, lchnk)
++   call outfld('icc2', icc2, pcols, lchnk)
+    call outfld('icnc', icnc, pcols, lchnk)
++   call outfld('icnc2', icnc2, pcols, lchnk)
+    call outfld('icr', icr, pcols, lchnk)
++   call outfld('icr2', icr2, pcols, lchnk)
+    call outfld('cod', cod, pcols, lchnk)
+    call outfld('ccn', ccn, pcols, lchnk)
++   call outfld('ccn2', ccn2, pcols, lchnk)
+    call outfld('ptop', ptop, pcols, lchnk)
++   call outfld('ptop2', ptop2, pcols, lchnk)
+    call outfld('ttop', ttop, pcols, lchnk)
++   call outfld('ttop2', ttop2, pcols, lchnk)
+    call outfld('htop', htop, pcols, lchnk)
++   call outfld('htop2', htop2, pcols, lchnk)
+    call outfld('intccn', intccn, pcols, lchnk)
+    call outfld('colrv', colrv, pcols, lchnk)
+    call outfld('rwp', rwp, pcols, lchnk)
