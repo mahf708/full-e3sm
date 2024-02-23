@@ -1,0 +1,22 @@
+From 59ab0d6f6233793c252a70d268e5926e1a969296 Mon Sep 17 00:00:00 2001
+From: Naser Mahfouz <naser.mahfouz@pnnl.gov>
+Date: Fri, 23 Feb 2024 11:44:48 -0800
+Subject: [PATCH] print out theta<vtheta_thresh locations
+
+---
+ components/homme/src/theta-l/share/prim_advance_mod.F90 | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/components/homme/src/theta-l/share/prim_advance_mod.F90 b/components/homme/src/theta-l/share/prim_advance_mod.F90
+index fed34296c2bc..28776974a76f 100644
+--- a/components/homme/src/theta-l/share/prim_advance_mod.F90
++++ b/components/homme/src/theta-l/share/prim_advance_mod.F90
+@@ -1891,6 +1891,7 @@ subroutine limiter_dp3d_k(dp3d,vtheta_dp,spheremp,dp0)
+       do j = 1 , np
+          do i = 1 , np
+             if ( (vtheta_dp(i,j,k) - vtheta_thresh*dp3d(i,j,k)) < 0 ) then
++               write(iulog,*) 'theta<vtheta_thresh at column location lat,lon (radians):',elem(ie)%spherep(i,j)%lat,elem(ie)%spherep(i,j)%lon
+                vtheta_dp(i,j,k)=vtheta_thresh*dp3d(i,j,k)
+             endif
+          enddo
+
