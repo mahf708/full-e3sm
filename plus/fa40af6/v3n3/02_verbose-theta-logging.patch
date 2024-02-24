@@ -1,0 +1,133 @@
+From 59ab0d6f6233793c252a70d268e5926e1a969296 Mon Sep 17 00:00:00 2001
+From: Naser Mahfouz <naser.mahfouz@pnnl.gov>
+Date: Fri, 23 Feb 2024 11:44:48 -0800
+Subject: [PATCH 1/2] print out theta<vtheta_thresh locations
+
+---
+ components/homme/src/theta-l/share/prim_advance_mod.F90 | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/components/homme/src/theta-l/share/prim_advance_mod.F90 b/components/homme/src/theta-l/share/prim_advance_mod.F90
+index fed34296c2bc..28776974a76f 100644
+--- a/components/homme/src/theta-l/share/prim_advance_mod.F90
++++ b/components/homme/src/theta-l/share/prim_advance_mod.F90
+@@ -1891,6 +1891,7 @@ subroutine limiter_dp3d_k(dp3d,vtheta_dp,spheremp,dp0)
+       do j = 1 , np
+          do i = 1 , np
+             if ( (vtheta_dp(i,j,k) - vtheta_thresh*dp3d(i,j,k)) < 0 ) then
++               write(iulog,*) 'theta<vtheta_thresh at column location lat,lon (radians):',elem(ie)%spherep(i,j)%lat,elem(ie)%spherep(i,j)%lon
+                vtheta_dp(i,j,k)=vtheta_thresh*dp3d(i,j,k)
+             endif
+          enddo
+
+From f3747ea2d9afb1eca7b79a39e25be19943462651 Mon Sep 17 00:00:00 2001
+From: Naser Mahfouz <naser.mahfouz@pnnl.gov>
+Date: Fri, 23 Feb 2024 13:47:24 -0800
+Subject: [PATCH 2/2] add the logging correctly by passing elem
+
+---
+ .../src/theta-l/share/prim_advance_mod.F90    | 19 +++++++++++--------
+ .../thetal_kokkos_ut/caar_interface.F90       |  2 +-
+ 2 files changed, 12 insertions(+), 9 deletions(-)
+
+diff --git a/components/homme/src/theta-l/share/prim_advance_mod.F90 b/components/homme/src/theta-l/share/prim_advance_mod.F90
+index 28776974a76f..68434b745e55 100644
+--- a/components/homme/src/theta-l/share/prim_advance_mod.F90
++++ b/components/homme/src/theta-l/share/prim_advance_mod.F90
+@@ -34,7 +34,7 @@ module prim_advance_mod
+   use kinds,              only: iulog, real_kind
+   use perf_mod,           only: t_adj_detailf, t_barrierf, t_startf, t_stopf ! _EXTERNAL
+   use parallel_mod,       only: abortmp, global_shared_buf, global_shared_sum, iam, parallel_t
+-  use physical_constants, only: Cp, cp, cpwater_vapor, g, kappa, Rgas, Rwater_vapor, p0, TREF
++  use physical_constants, only: Cp, cp, cpwater_vapor, g, kappa, Rgas, Rwater_vapor, p0, TREF, dd_pi
+   use physics_mod,        only: virtual_specific_heat, virtual_temperature
+   use prim_si_mod,        only: preq_vertadv_v1
+   use reduction_mod,      only: parallelmax, reductionbuffer_ordered_1d_t
+@@ -324,7 +324,7 @@ subroutine prim_advance_exp(elem, deriv, hvcoord, hybrid,dt, tl,  nets, nete, co
+           elem(ie)%state%phinh_i(:,:,1:nlev,np1)=elem(ie)%state%phinh_i(:,:,1:nlev,np1)+&
+                (elem(ie)%state%phinh_i(:,:,1:nlev,nm1)-elem(ie)%state%phinh_i(:,:,1:nlev,n0))/4
+           call limiter_dp3d_k(elem(ie)%state%dp3d(:,:,:,np1),elem(ie)%state%vtheta_dp(:,:,:,np1),&
+-               elem(ie)%spheremp,hvcoord%dp0)
++               elem(ie),hvcoord%dp0)
+        enddo
+ 
+        !  n0          nm1       np1 
+@@ -1785,7 +1785,7 @@ subroutine compute_andor_apply_rhs(np1,nm1,n0,dt2,elem,hvcoord,hybrid,&
+      endif
+      if (scale3 /= 0) then
+        call limiter_dp3d_k(elem(ie)%state%dp3d(:,:,:,np1),elem(ie)%state%vtheta_dp(:,:,:,np1),&
+-            elem(ie)%spheremp,hvcoord%dp0)
++            elem(ie),hvcoord%dp0)
+      endif
+   end do
+   call t_stopf('compute_andor_apply_rhs')
+@@ -1793,7 +1793,7 @@ subroutine compute_andor_apply_rhs(np1,nm1,n0,dt2,elem,hvcoord,hybrid,&
+   end subroutine compute_andor_apply_rhs
+ 
+ 
+-  subroutine limiter_dp3d_k(dp3d,vtheta_dp,spheremp,dp0)
++  subroutine limiter_dp3d_k(dp3d,vtheta_dp,elem,dp0)
+   ! mass conserving column limiter (1D only)
+   !
+   ! if dp3d < dp3d_thresh*hvcoord%dp0 then apply vertical mixing 
+@@ -1806,14 +1806,17 @@ subroutine limiter_dp3d_k(dp3d,vtheta_dp,spheremp,dp0)
+   real (kind=real_kind), intent(inout) :: dp3d(np,np,nlev)
+   real (kind=real_kind), intent(inout) :: vtheta_dp(np,np,nlev)
+   real (kind=real_kind), intent(in) :: dp0(nlev)
+-  real (kind=real_kind), intent(in) :: spheremp(np,np)  !  density
++  type (element_t)     , intent(in) :: elem
+ 
+   ! local
+   real (kind=real_kind) :: Qcol(nlev)
+   real (kind=real_kind) :: mass,mass_new
++  real (kind=real_kind) :: rad2deg
+   logical :: warn
+   integer i,j,k
+ 
++  rad2deg = 180.0_real_kind/dd_pi
++
+   ! first check if limter is needed, and print warning
+   warn=.false. 
+   do k=1,nlev
+@@ -1839,7 +1842,7 @@ subroutine limiter_dp3d_k(dp3d,vtheta_dp,spheremp,dp0)
+              vtheta_dp(i,j,:)=vtheta_dp(i,j,:)/dp3d(i,j,:)
+ #endif
+              ! subtract min, multiply in by weights
+-             Qcol(:) = (dp3d(i,j,:) - dp3d_thresh*dp0(:))*spheremp(i,j)
++             Qcol(:) = (dp3d(i,j,:) - dp3d_thresh*dp0(:))*elem%spheremp(i,j)
+              mass = 0
+              do k = 1,nlev
+                 mass = mass + Qcol(k)
+@@ -1860,7 +1863,7 @@ subroutine limiter_dp3d_k(dp3d,vtheta_dp,spheremp,dp0)
+              if ( mass_new > 0 ) Qcol(:) = Qcol(:) * (abs(mass) / mass_new)
+              if ( mass     < 0 ) Qcol(:) = -Qcol(:)
+              !
+-             dp3d(i,j,:) = Qcol(:)/spheremp(i,j) + dp3d_thresh*dp0(:)
++             dp3d(i,j,:) = Qcol(:)/elem%spheremp(i,j) + dp3d_thresh*dp0(:)
+ #ifdef HOMMEXX_BFB_TESTING
+              vtheta_dp(i,j,:)=vtheta_dp(i,j,:)*dp3d(i,j,:)
+ #endif
+@@ -1891,8 +1894,8 @@ subroutine limiter_dp3d_k(dp3d,vtheta_dp,spheremp,dp0)
+       do j = 1 , np
+          do i = 1 , np
+             if ( (vtheta_dp(i,j,k) - vtheta_thresh*dp3d(i,j,k)) < 0 ) then
+-               write(iulog,*) 'theta<vtheta_thresh at column location lat,lon (radians):',elem(ie)%spherep(i,j)%lat,elem(ie)%spherep(i,j)%lon
+                vtheta_dp(i,j,k)=vtheta_thresh*dp3d(i,j,k)
++               write(iulog,'(a,es11.3,a,es11.3,a,i4)') 'vtheta_thresh_log--> lat: ',elem%spherep(i,j)%lat*rad2deg,' lon: ',elem%spherep(i,j)%lon*rad2deg,' k: ',k
+             endif
+          enddo
+       enddo
+diff --git a/components/homme/test_execs/thetal_kokkos_ut/caar_interface.F90 b/components/homme/test_execs/thetal_kokkos_ut/caar_interface.F90
+index 346dc1a23d3c..c7a3889ab8cf 100644
+--- a/components/homme/test_execs/thetal_kokkos_ut/caar_interface.F90
++++ b/components/homme/test_execs/thetal_kokkos_ut/caar_interface.F90
+@@ -139,7 +139,7 @@ subroutine run_limiter_f90 (np1, dp_ptr, vtheta_dp_ptr) bind(c)
+     call c_f_pointer(vtheta_dp_ptr, vtheta_dp, [np,np,  nlev,  timelevels, nelemd])
+ 
+     do ie=1,nelemd
+-      call limiter_dp3d_k(dp(:,:,:,np1,ie),vtheta_dp(:,:,:,np1,ie),elem(ie)%spheremp,hvcoord%dp0)
++      call limiter_dp3d_k(dp(:,:,:,np1,ie),vtheta_dp(:,:,:,np1,ie),elem(ie),hvcoord%dp0)
+     enddo
+ 
+   end subroutine run_limiter_f90
+
