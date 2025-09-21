@@ -1,0 +1,81 @@
+From 9c1c0f83efbd2b02ee0bdb7efb290ffdfe5102d4 Mon Sep 17 00:00:00 2001
+From: mahf708 <naser.mahfouz@pnnl.gov>
+Date: Sun, 21 Sep 2025 13:30:06 -0500
+Subject: [PATCH] fix autoconv/autocl rates
+
+---
+ .../eam/src/physics/cam/output_aerocom_aie.F90    |  4 ++--
+ .../eam/src/physics/p3/eam/micro_p3_interface.F90 | 15 +++++++++++++++
+ 2 files changed, 17 insertions(+), 2 deletions(-)
+
+diff --git a/components/eam/src/physics/cam/output_aerocom_aie.F90 b/components/eam/src/physics/cam/output_aerocom_aie.F90
+index 7257073f08..49dd3e762e 100644
+--- a/components/eam/src/physics/cam/output_aerocom_aie.F90
++++ b/components/eam/src/physics/cam/output_aerocom_aie.F90
+@@ -111,8 +111,8 @@ CONTAINS
+    call pbuf_add_field('iwp2', 'physpkg', dtype_r8, (/pcols/),      iwp2_idx)
+ 
+    call pbuf_add_field('ccn3d', 'physpkg', dtype_r8, (/pcols, pver/),     ccn3d_idx)
+-   call pbuf_add_field('autocl', 'physpkg', dtype_r8, (/pcols, pver/),     autocl_idx)
+-   call pbuf_add_field('accretl', 'physpkg', dtype_r8, (/pcols, pver/),     accretl_idx)
++   call pbuf_add_field('P3_qc2qr_autoconv_tend', 'physpkg', dtype_r8, (/pcols, pver/),     autocl_idx)
++   call pbuf_add_field('P3_qc2qr_accret_tend', 'physpkg', dtype_r8, (/pcols, pver/),     accretl_idx)
+ 
+    call pbuf_add_field('QRAIN', 'physpkg', dtype_r8, (/pcols, pver/),     qrain_idx)
+    call pbuf_add_field('cld_tau', 'physpkg', dtype_r8, (/pcols, pver/),     cld_tau_idx)
+diff --git a/components/eam/src/physics/p3/eam/micro_p3_interface.F90 b/components/eam/src/physics/p3/eam/micro_p3_interface.F90
+index c6c533329a..1b77ee0bbd 100644
+--- a/components/eam/src/physics/p3/eam/micro_p3_interface.F90
++++ b/components/eam/src/physics/p3/eam/micro_p3_interface.F90
+@@ -98,6 +98,8 @@ module micro_p3_interface
+       accre_enhan_idx,    &
+       mon_ccn_1_idx,      &
+       mon_ccn_2_idx,      &
++      P3_qc2qr_accret_tend_idx, &
++      P3_qc2qr_autoconv_tend_idx, &
+       current_month      !Needed for prescribed CCN option         
+ 
+ ! Physics buffer indices for fields registered by other modules
+@@ -351,6 +353,10 @@ end subroutine micro_p3_readnl
+    call pbuf_add_field('MON_CCN_1',  'global', dtype_r8,(/pcols,pver/),mon_ccn_1_idx)
+    call pbuf_add_field('MON_CCN_2',  'global', dtype_r8,(/pcols,pver/),mon_ccn_2_idx)
+ 
++   !! P3 microphysics tendencies for other processes
++   call pbuf_add_field('P3_qc2qr_accret_tend', 'physpkg', dtype_r8,(/pcols,pver/), P3_qc2qr_accret_tend_idx)
++   call pbuf_add_field('P3_qc2qr_autoconv_tend', 'physpkg', dtype_r8,(/pcols,pver/), P3_qc2qr_autoconv_tend_idx)
++
+    call add_hist_coord('P3_input_dim',  P3_in_dimsize, 'Input field dimension for p3_main subroutine',  'N/A', P3_input_dim)
+    call add_hist_coord('P3_output_dim', P3_out_dimsize, 'Output field dimension for p3_main subroutine', 'N/A', P3_output_dim)
+ 
+@@ -1021,6 +1027,8 @@ end subroutine micro_p3_readnl
+     real(rtype), pointer :: ni_activated(:,:)     ! ice nucleation number
+     real(rtype), pointer :: npccn(:,:)    ! liquid activation number tendency
+     real(rtype), pointer :: cmeliq(:,:)
++    real(rtype), pointer :: P3_qc2qr_accret_tend(:,:)    ! P3 accretion tendency
++    real(rtype), pointer :: P3_qc2qr_autoconv_tend(:,:)  ! P3 autoconversion tendency
+     !!
+     real(rtype), pointer :: prec_str(:)    ! [Total] Sfc flux of precip from stratiform [ m/s ]
+     real(rtype), pointer :: prec_sed(:)    ! Surface flux of total cloud water from sedimentation
+@@ -1162,6 +1170,8 @@ end subroutine micro_p3_readnl
+     call pbuf_get_field(pbuf, ls_reffsnow_idx,  reffsnow                                                   ) 
+     call pbuf_get_field(pbuf,  cv_reffliq_idx, cvreffliq                                                   )
+     call pbuf_get_field(pbuf,  cv_reffice_idx, cvreffice                                                   )
++    call pbuf_get_field(pbuf, P3_qc2qr_accret_tend_idx, P3_qc2qr_accret_tend                        )
++    call pbuf_get_field(pbuf, P3_qc2qr_autoconv_tend_idx, P3_qc2qr_autoconv_tend                    )
+ 
+     ncol = state%ncol
+     !==============
+@@ -1646,6 +1656,11 @@ end subroutine micro_p3_readnl
+    !call outfld('P3_qrcon',               tend_out(:,:, 1), pcols, lchnk) 
+    call outfld('P3_qc2qr_accret_tend',    tend_out(:,:, 2), pcols, lchnk) 
+    call outfld('P3_qc2qr_autoconv_tend',  tend_out(:,:, 3), pcols, lchnk) 
++
++   ! Store tendencies in pbuf for other processes to access
++   P3_qc2qr_accret_tend(:ncol,:pver) = tend_out(:ncol,:pver, 2)
++   P3_qc2qr_autoconv_tend(:ncol,:pver) = tend_out(:ncol,:pver, 3)
++
+    call outfld('P3_nc_accret_tend',       tend_out(:,:, 4), pcols, lchnk) 
+    call outfld('P3_nc2nr_autoconv_tend',  tend_out(:,:, 5), pcols, lchnk) 
+    call outfld('P3_nc_selfcollect_tend',  tend_out(:,:, 6), pcols, lchnk) 
+-- 
+2.43.7
